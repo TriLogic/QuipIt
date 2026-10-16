@@ -2,6 +2,10 @@
 
 ## 2026-10-15
 
+- Add a manually triggered or version-tagged release workflow with four native
+  builds, portable Windows/Linux archives, ad-hoc signed macOS app bundles,
+  checksums, and a draft release for review. Include a browser-only release guide.
+
 - Keep text, shapes, and imported images as editable objects instead of merging
   them into the canvas. Support naming, visibility, duplication, deletion,
   front-to-back ordering, and undo/redo.

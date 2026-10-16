@@ -3,6 +3,12 @@
 A Rust desktop image editor for Windows, Linux, and macOS. One canvas, no tabs,
 with a straightforward workflow inspired by Paint 3D.
 
+## Downloads and releases
+
+The **Build draft release** GitHub Action builds Windows, Linux, Apple Silicon Mac,
+and Intel Mac downloads, then creates a draft release for review. See
+[the release guide](RELEASE.md) for browser-only instructions and packaging limits.
+
 ## Run
 
 Install a current stable Rust toolchain, then run:
