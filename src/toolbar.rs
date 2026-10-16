@@ -2,38 +2,64 @@ use eframe::egui::{self, Pos2, Rect, Response, Stroke, Ui, Vec2};
 
 pub const BUTTON_SIZE: f32 = 34.0;
 
-pub fn border_size(ui: &mut Ui, value: &mut f32) -> bool {
-    ui.label("Border size");
-    let mut changed = ui
-        .add(egui::Slider::new(value, 0.0..=64.0).show_value(false))
-        .changed();
+pub fn numeric<T: egui::emath::Numeric>(
+    ui: &mut Ui,
+    label: &str,
+    value: &mut T,
+    range: std::ops::RangeInclusive<T>,
+    suffix: &str,
+    logarithmic: bool,
+) -> bool {
+    let before = *value;
+    let minimum = range.start().to_f64();
+    let maximum = range.end().to_f64();
     ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let short_label = if label == "Transparency" {
+            "Transp."
+        } else {
+            label
+        };
+        ui.add_sized(
+            [52.0, 18.0],
+            egui::Label::new(format!("{short_label}:")).wrap_mode(egui::TextWrapMode::Extend),
+        )
+        .on_hover_text(label);
+        ui.spacing_mut().slider_width =
+            (ui.available_width() - 92.0 - 3.0 * ui.spacing().item_spacing.x).clamp(32.0, 180.0);
+        ui.add(
+            egui::Slider::new(value, range.clone())
+                .logarithmic(logarithmic)
+                .show_value(false),
+        );
         if ui
-            .add_enabled(*value > 0.0, egui::Button::new("−"))
-            .on_hover_text("Decrease border size by 1 px")
+            .add_enabled(value.to_f64() > minimum, egui::Button::new("−"))
+            .on_hover_text(format!("Decrease {label} by 1{suffix}"))
             .clicked()
         {
-            *value = (*value - 1.0).max(0.0);
-            changed = true;
+            *value = T::from_f64((value.to_f64() - 1.0).clamp(minimum, maximum));
         }
-        changed |= ui
-            .add(
-                egui::DragValue::new(value)
-                    .range(0.0..=64.0)
-                    .speed(1.0)
-                    .suffix(" px"),
-            )
-            .changed();
+        ui.add_sized(
+            [52.0, 18.0],
+            egui::DragValue::new(value)
+                .range(range)
+                .speed(1.0)
+                .max_decimals(if T::INTEGRAL { 0 } else { 2 })
+                .suffix(suffix),
+        );
         if ui
-            .add_enabled(*value < 64.0, egui::Button::new("+"))
-            .on_hover_text("Increase border size by 1 px")
+            .add_enabled(value.to_f64() < maximum, egui::Button::new("+"))
+            .on_hover_text(format!("Increase {label} by 1{suffix}"))
             .clicked()
         {
-            *value = (*value + 1.0).min(64.0);
-            changed = true;
+            *value = T::from_f64((value.to_f64() + 1.0).clamp(minimum, maximum));
         }
     });
-    changed
+    *value != before
+}
+
+pub fn border_size(ui: &mut Ui, value: &mut f32) -> bool {
+    numeric(ui, "Border", value, 0.0..=64.0, " px", false)
 }
 
 #[derive(Clone, Copy)]
@@ -64,7 +90,7 @@ pub fn button(ui: &mut Ui, icon: Icon, label: &str, enabled: bool, selected: boo
         let painter = ui.painter().with_clip_rect(response.rect);
         let origin = response.rect.center() - Vec2::splat(9.0);
         let point = |x: f32, y: f32| origin + egui::vec2(x, y);
-        let stroke = Stroke::new(1.6, ui.style().interact(&response).fg_stroke.color);
+        let stroke = Stroke::new(1.6_f32, ui.style().interact(&response).fg_stroke.color);
         let line = |a: (f32, f32), b: (f32, f32)| {
             painter.line_segment([point(a.0, a.1), point(b.0, b.1)], stroke);
         };
@@ -193,4 +219,91 @@ pub fn button(ui: &mut Ui, icon: Icon, label: &str, enabled: bool, selected: boo
         response.on_hover_text(label)
     })
     .inner
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn numeric_frame(
+        ctx: &egui::Context,
+        value: &mut f32,
+        events: Vec<egui::Event>,
+    ) -> (egui::FullOutput, bool) {
+        let mut changed = false;
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(230.0, 100.0))),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    changed = numeric(ui, "X", value, -1.0..=1.0, " px", false);
+                });
+            },
+        );
+        (output, changed)
+    }
+
+    #[test]
+    fn numeric_buttons_step_negative_values_and_stop_at_bounds_in_a_narrow_panel() {
+        let ctx = egui::Context::default();
+        let mut value = 0.0;
+        numeric_frame(&ctx, &mut value, vec![]);
+        let (output, changed) = numeric_frame(&ctx, &mut value, vec![]);
+        assert!(!changed);
+        let text_rect = |label: &str| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| {
+                    if let egui::Shape::Text(text) = &shape.shape
+                        && text.galley.job.text == label
+                    {
+                        Some(text.galley.rect.translate(text.pos.to_vec2()))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap()
+        };
+        let decrement = text_rect("−").center();
+        let increment = text_rect("+").center();
+        assert!(increment.x < 222.0);
+        assert!((decrement.y - increment.y).abs() < 1.0);
+        for (position, expected, changed_expected) in [
+            (decrement, -1.0, true),
+            (decrement, -1.0, false),
+            (increment, 0.0, true),
+            (increment, 1.0, true),
+            (increment, 1.0, false),
+        ] {
+            numeric_frame(
+                &ctx,
+                &mut value,
+                vec![
+                    egui::Event::PointerMoved(position),
+                    egui::Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+            let (_, changed) = numeric_frame(
+                &ctx,
+                &mut value,
+                vec![egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+            assert_eq!(value, expected);
+            assert_eq!(changed, changed_expected);
+        }
+    }
 }

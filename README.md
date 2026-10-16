@@ -42,6 +42,12 @@ A graphical desktop session is required to launch the app. Docker is not require
   with a draggable divider and independent scrolling. It keeps the canvas layout stable
   when selecting, applying or canceling a shape. Shape properties adjust border thickness, border color,
   fill color and transparency. Fill is disabled for open lines/curves.
+  All shapes, lines and curves also support a drop shadow with color/transparency,
+  X/Y offsets and blur. Shadows follow the visible fill and border, extend beyond
+  the selector, and remain editable when saving and reopening a project.
+  Numeric adjustments use one row with a slider, decrease button, editable number
+  and increase button, including shadow settings, rotation, sizes, transparency
+  and custom RGB channels. Step buttons change values by one within their limits.
   A rotation slider, 90-degree turn buttons and horizontal/vertical reflection
   buttons transform the selected shape before applying it. The selector follows
   the transformed bounds. Right-click any shape selector handle to toggle between

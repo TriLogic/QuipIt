@@ -282,7 +282,7 @@ impl InsertedImage {
         ui.painter().rect_stroke(
             rect,
             0.0,
-            egui::Stroke::new(1.5, Color32::LIGHT_BLUE),
+            egui::Stroke::new(1.5_f32, Color32::LIGHT_BLUE),
             egui::StrokeKind::Outside,
         );
         for (index, (x, y)) in [
@@ -304,7 +304,7 @@ impl InsertedImage {
             ui.painter().rect_stroke(
                 handle,
                 0.0,
-                egui::Stroke::new(1.0, Color32::BLACK),
+                egui::Stroke::new(1.0_f32, Color32::BLACK),
                 egui::StrokeKind::Inside,
             );
             let response = ui.interact(
@@ -474,7 +474,7 @@ fn render_image(source: &RgbaImage, style: ImageStyle, width: u32, height: u32) 
     let base_height = (b.hypot(d).round() as u32).max(1);
     let frame = render_frame(source, style, base_width, base_height);
     let mut data = frame.into_raw();
-    for pixel in data.chunks_exact_mut(4) {
+    for pixel in data.as_chunks_mut::<4>().0 {
         for i in 0..3 {
             pixel[i] = ((pixel[i] as u32 * pixel[3] as u32 + 127) / 255) as u8;
         }
@@ -550,11 +550,11 @@ fn paint_rotate_cursor(ui: &egui::Ui) {
         .collect();
     painter.add(egui::Shape::line(
         arc.clone(),
-        egui::Stroke::new(4.0, Color32::BLACK),
+        egui::Stroke::new(4.0_f32, Color32::BLACK),
     ));
     painter.add(egui::Shape::line(
         arc,
-        egui::Stroke::new(2.0, Color32::WHITE),
+        egui::Stroke::new(2.0_f32, Color32::WHITE),
     ));
     let tip = center + egui::vec2(end.cos(), end.sin()) * 7.0;
     let tangent = egui::vec2(-end.sin(), end.cos());
@@ -566,7 +566,7 @@ fn paint_rotate_cursor(ui: &egui::Ui) {
             tip - tangent * 3.0 - normal * 4.0,
         ],
         Color32::WHITE,
-        egui::Stroke::new(1.0, Color32::BLACK),
+        egui::Stroke::new(1.0_f32, Color32::BLACK),
     ));
 }
 

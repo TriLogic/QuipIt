@@ -727,14 +727,8 @@ pub fn properties(
     if let Some(error) = &data.font_error {
         ui.colored_label(Color32::RED, error);
     }
-    ui.label("Font size");
-    changed |= ui
-        .add(
-            egui::Slider::new(&mut data.size, 4.0..=512.0)
-                .logarithmic(true)
-                .suffix(" px"),
-        )
-        .changed();
+
+    changed |= crate::toolbar::numeric(ui, "Size", &mut data.size, 4.0..=512.0, " px", true);
     ui.horizontal(|ui| {
         changed |= ui.checkbox(&mut data.bold, "Bold").changed();
         changed |= ui.checkbox(&mut data.italic, "Italic").changed();
@@ -771,15 +765,24 @@ pub fn properties(
         if crate::colors::selector(ui, "Shadow", data.shadow_color).clicked() {
             palette.begin(crate::colors::Target::TextShadow, data.shadow_color, 0.0);
         }
-        changed |= ui
-            .add(egui::Slider::new(&mut data.shadow_offset.x, -32.0..=32.0).text("X offset"))
-            .changed();
-        changed |= ui
-            .add(egui::Slider::new(&mut data.shadow_offset.y, -32.0..=32.0).text("Y offset"))
-            .changed();
-        changed |= ui
-            .add(egui::Slider::new(&mut data.shadow_blur, 0.0..=16.0).text("Blur"))
-            .changed();
+        changed |= crate::toolbar::numeric(
+            ui,
+            "X",
+            &mut data.shadow_offset.x,
+            -32.0..=32.0,
+            " px",
+            false,
+        );
+        changed |= crate::toolbar::numeric(
+            ui,
+            "Y",
+            &mut data.shadow_offset.y,
+            -32.0..=32.0,
+            " px",
+            false,
+        );
+        changed |=
+            crate::toolbar::numeric(ui, "Blur", &mut data.shadow_blur, 0.0..=16.0, " px", false);
     }
     if overflow {
         ui.colored_label(
@@ -885,7 +888,7 @@ pub fn canvas_editor(
                     object.source_to_screen(*caret, canvas, scale),
                     object.source_to_screen(bottom, canvas, scale),
                 ],
-                egui::Stroke::new(1.5, Color32::LIGHT_BLUE),
+                egui::Stroke::new(1.5_f32, Color32::LIGHT_BLUE),
             );
         }
     }

@@ -421,6 +421,7 @@ impl QuipIt {
             }
         }
         if let (Some((kind, style)), Some(inserted)) = (self.active_shape, &mut self.inserted) {
+            inserted.image_style.get_or_insert_default();
             self.last_shape_border_width = Some(style.border_width);
             let size = [
                 inserted.rect.width().round().max(1.0) as u32,
@@ -722,7 +723,7 @@ impl QuipIt {
                                                 response.rect.x_range(),
                                                 y,
                                                 egui::Stroke::new(
-                                                    2.0,
+                                                    2.0_f32,
                                                     ui.visuals().selection.bg_fill,
                                                 ),
                                             );
@@ -1018,7 +1019,7 @@ impl QuipIt {
                     style.border_transparency = edit.transparency;
                 }
             }
-            colors::Target::ImageShadow => {
+            colors::Target::ImageShadow | colors::Target::ShapeShadow => {
                 if let Some(inserted) = &mut self.inserted
                     && let Some(style) = &mut inserted.image_style
                 {
@@ -1527,31 +1528,41 @@ impl QuipIt {
                                                 0.0,
                                             );
                                         }
-                                        ui.add(
-                                            egui::Slider::new(
-                                                &mut style.shadow_offset.x,
-                                                -64.0..=64.0,
-                                            )
-                                            .text("X offset"),
+                                        crate::toolbar::numeric(
+                                            ui,
+                                            "X",
+                                            &mut style.shadow_offset.x,
+                                            -64.0..=64.0,
+                                            " px",
+                                            false,
                                         );
-                                        ui.add(
-                                            egui::Slider::new(
-                                                &mut style.shadow_offset.y,
-                                                -64.0..=64.0,
-                                            )
-                                            .text("Y offset"),
+                                        crate::toolbar::numeric(
+                                            ui,
+                                            "Y",
+                                            &mut style.shadow_offset.y,
+                                            -64.0..=64.0,
+                                            " px",
+                                            false,
                                         );
-                                        ui.add(
-                                            egui::Slider::new(&mut style.shadow_blur, 0.0..=32.0)
-                                                .text("Blur"),
+                                        crate::toolbar::numeric(
+                                            ui,
+                                            "Blur",
+                                            &mut style.shadow_blur,
+                                            0.0..=32.0,
+                                            " px",
+                                            false,
                                         );
                                     }
                                 }
                                 ui.separator();
-                                ui.label("Rotation");
-                                ui.add(
-                                    egui::Slider::new(&mut self.shape_rotation, -180.0..=180.0)
-                                        .suffix("°"),
+
+                                crate::toolbar::numeric(
+                                    ui,
+                                    "Rotation",
+                                    &mut self.shape_rotation,
+                                    -180.0..=180.0,
+                                    "°",
+                                    false,
                                 );
                                 ui.horizontal(|ui| {
                                     if tool_button(
@@ -1631,47 +1642,14 @@ impl QuipIt {
                                                 style.image_transparency,
                                             );
                                         }
-                                        ui.add(
-                                            egui::Slider::new(
-                                                &mut style.image_transparency,
-                                                0.0..=100.0,
-                                            )
-                                            .integer()
-                                            .show_value(false),
+                                        toolbar::numeric(
+                                            ui,
+                                            "Transparency",
+                                            &mut style.image_transparency,
+                                            0.0..=100.0,
+                                            "%",
+                                            false,
                                         );
-                                        ui.horizontal(|ui| {
-                                            if ui
-                                                .add_enabled(
-                                                    style.image_transparency > 0.0,
-                                                    egui::Button::new("−"),
-                                                )
-                                                .on_hover_text("Decrease transparency by 1%")
-                                                .clicked()
-                                            {
-                                                style.image_transparency =
-                                                    (style.image_transparency.round() - 1.0)
-                                                        .max(0.0);
-                                            }
-                                            ui.add(
-                                                egui::DragValue::new(&mut style.image_transparency)
-                                                    .range(0.0..=100.0)
-                                                    .speed(1.0)
-                                                    .max_decimals(0)
-                                                    .suffix("%"),
-                                            );
-                                            if ui
-                                                .add_enabled(
-                                                    style.image_transparency < 100.0,
-                                                    egui::Button::new("+"),
-                                                )
-                                                .on_hover_text("Increase transparency by 1%")
-                                                .clicked()
-                                            {
-                                                style.image_transparency =
-                                                    (style.image_transparency.round() + 1.0)
-                                                        .min(100.0);
-                                            }
-                                        });
                                         ui.checkbox(&mut style.shadow, "Drop shadow");
                                         if style.shadow {
                                             if colors::selector(ui, "Shadow", style.shadow_color)
@@ -1683,35 +1661,39 @@ impl QuipIt {
                                                     0.0,
                                                 );
                                             }
-                                            ui.add(
-                                                egui::Slider::new(
-                                                    &mut style.shadow_offset.x,
-                                                    -64.0..=64.0,
-                                                )
-                                                .text("X offset"),
+                                            crate::toolbar::numeric(
+                                                ui,
+                                                "X",
+                                                &mut style.shadow_offset.x,
+                                                -64.0..=64.0,
+                                                " px",
+                                                false,
                                             );
-                                            ui.add(
-                                                egui::Slider::new(
-                                                    &mut style.shadow_offset.y,
-                                                    -64.0..=64.0,
-                                                )
-                                                .text("Y offset"),
+                                            crate::toolbar::numeric(
+                                                ui,
+                                                "Y",
+                                                &mut style.shadow_offset.y,
+                                                -64.0..=64.0,
+                                                " px",
+                                                false,
                                             );
-                                            ui.add(
-                                                egui::Slider::new(
-                                                    &mut style.shadow_blur,
-                                                    0.0..=32.0,
-                                                )
-                                                .text("Blur"),
+                                            crate::toolbar::numeric(
+                                                ui,
+                                                "Blur",
+                                                &mut style.shadow_blur,
+                                                0.0..=32.0,
+                                                " px",
+                                                false,
                                             );
                                         }
-                                        ui.label("Rotation");
-                                        ui.add(
-                                            egui::Slider::new(
-                                                &mut self.shape_rotation,
-                                                -180.0..=180.0,
-                                            )
-                                            .suffix("°"),
+
+                                        crate::toolbar::numeric(
+                                            ui,
+                                            "Rotation",
+                                            &mut self.shape_rotation,
+                                            -180.0..=180.0,
+                                            "°",
+                                            false,
                                         );
                                         ui.horizontal(|ui| {
                                             if tool_button(
@@ -1800,11 +1782,53 @@ impl QuipIt {
                                     self.palette.begin(colors::Target::Fill, style.fill, 0.0);
                                 }
                             });
+                            if let Some(inserted) = &mut self.inserted {
+                                let shadow = inserted.image_style.get_or_insert_default();
+                                ui.checkbox(&mut shadow.shadow, "Drop shadow");
+                                if shadow.shadow {
+                                    if colors::selector(ui, "Shadow", shadow.shadow_color).clicked()
+                                    {
+                                        self.palette.begin(
+                                            colors::Target::ShapeShadow,
+                                            shadow.shadow_color,
+                                            0.0,
+                                        );
+                                    }
+                                    crate::toolbar::numeric(
+                                        ui,
+                                        "X",
+                                        &mut shadow.shadow_offset.x,
+                                        -64.0..=64.0,
+                                        " px",
+                                        false,
+                                    );
+                                    crate::toolbar::numeric(
+                                        ui,
+                                        "Y",
+                                        &mut shadow.shadow_offset.y,
+                                        -64.0..=64.0,
+                                        " px",
+                                        false,
+                                    );
+                                    crate::toolbar::numeric(
+                                        ui,
+                                        "Blur",
+                                        &mut shadow.shadow_blur,
+                                        0.0..=32.0,
+                                        " px",
+                                        false,
+                                    );
+                                }
+                            }
                             ui.separator();
-                            ui.label("Rotation");
-                            ui.add(
-                                egui::Slider::new(&mut self.shape_rotation, -180.0..=180.0)
-                                    .suffix("°"),
+
+                            crate::toolbar::numeric(
+                                ui,
+                                "Rotation",
+                                &mut self.shape_rotation,
+                                -180.0..=180.0,
+                                "°",
+                                false,
                             );
                             ui.horizontal(|ui| {
                                 if tool_button(ui, Icon::RotateLeft, "Rotate left 90°", true, false)
@@ -1941,15 +1965,14 @@ impl QuipIt {
                             .max(1.0) as u32
                     });
                     ui.horizontal(|ui| {
-                        ui.label("Width");
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut self.new_width, 1..=max_width)
-                                    .logarithmic(true)
-                                    .suffix(" px"),
-                            )
-                            .changed()
-                            && let Some(ratio) = ratio
+                        if crate::toolbar::numeric(
+                            ui,
+                            "Width",
+                            &mut self.new_width,
+                            1..=max_width,
+                            " px",
+                            true,
+                        ) && let Some(ratio) = ratio
                         {
                             self.new_height = (self.new_width as f64 / ratio)
                                 .round()
@@ -1958,15 +1981,14 @@ impl QuipIt {
                         }
                     });
                     ui.horizontal(|ui| {
-                        ui.label("Height");
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut self.new_height, 1..=max_height)
-                                    .logarithmic(true)
-                                    .suffix(" px"),
-                            )
-                            .changed()
-                            && let Some(ratio) = ratio
+                        if crate::toolbar::numeric(
+                            ui,
+                            "Height",
+                            &mut self.new_height,
+                            1..=max_height,
+                            " px",
+                            true,
+                        ) && let Some(ratio) = ratio
                         {
                             self.new_width = (self.new_height as f64 * ratio)
                                 .round()
@@ -2002,15 +2024,14 @@ impl QuipIt {
                         let (w, h) = pixels.dimensions();
                         ui.checkbox(&mut self.lock_ratio, "Keep proportions");
                         ui.horizontal(|ui| {
-                            ui.label("Width");
-                            if ui
-                                .add(
-                                    egui::Slider::new(&mut self.width, 1..=16384)
-                                        .logarithmic(true)
-                                        .suffix(" px"),
-                                )
-                                .changed()
-                                && self.lock_ratio
+                            if crate::toolbar::numeric(
+                                ui,
+                                "Width",
+                                &mut self.width,
+                                1..=16384,
+                                " px",
+                                true,
+                            ) && self.lock_ratio
                             {
                                 self.height = ((self.width as f64 * h as f64 / w as f64).round()
                                     as u32)
@@ -2018,15 +2039,14 @@ impl QuipIt {
                             }
                         });
                         ui.horizontal(|ui| {
-                            ui.label("Height");
-                            if ui
-                                .add(
-                                    egui::Slider::new(&mut self.height, 1..=16384)
-                                        .logarithmic(true)
-                                        .suffix(" px"),
-                                )
-                                .changed()
-                                && self.lock_ratio
+                            if crate::toolbar::numeric(
+                                ui,
+                                "Height",
+                                &mut self.height,
+                                1..=16384,
+                                " px",
+                                true,
+                            ) && self.lock_ratio
                             {
                                 self.width = ((self.height as f64 * w as f64 / h as f64).round()
                                     as u32)
@@ -2193,13 +2213,13 @@ impl QuipIt {
                         painter.rect_stroke(
                             selected,
                             0.0,
-                            egui::Stroke::new(2.0, Color32::WHITE),
+                            egui::Stroke::new(2.0_f32, Color32::WHITE),
                             egui::StrokeKind::Inside,
                         );
                         painter.rect_stroke(
                             selected.expand(1.0),
                             0.0,
-                            egui::Stroke::new(1.0, Color32::BLACK),
+                            egui::Stroke::new(1.0_f32, Color32::BLACK),
                             egui::StrokeKind::Outside,
                         );
                     }
@@ -2933,6 +2953,120 @@ mod tests {
         app.new_image(&ctx);
         app.place_text(text::Kind::Area, &ctx);
         assert_eq!(app.active_text.as_ref().unwrap().size, 37.0);
+    }
+
+    #[test]
+    fn shape_shadows_follow_visible_pixels_and_survive_project_round_trip() {
+        let ctx = egui::Context::default();
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("shape-shadow.qip");
+        for kind in shapes::ShapeKind::LINES
+            .into_iter()
+            .chain(shapes::ShapeKind::SHAPES)
+        {
+            let mut app = QuipIt {
+                pixels: Some(RgbaImage::new(240, 200)),
+                ..Default::default()
+            };
+            app.place_shape(kind, &ctx);
+            app.active_shape.as_mut().unwrap().1.fill = Color32::TRANSPARENT;
+            app.inserted.as_mut().unwrap().rect =
+                egui::Rect::from_min_size(egui::pos2(60.0, 50.0), egui::vec2(80.0, 70.0));
+            app.update_shape();
+            let object = app.inserted.as_ref().unwrap();
+            let rect = object.rect;
+            let source = object.pixels.clone();
+            let mut expected = RgbaImage::new(240, 200);
+            let shadow_pixels = RgbaImage::from_fn(source.width(), source.height(), |x, y| {
+                image::Rgba([255, 0, 0, source.get_pixel(x, y)[3]])
+            });
+            image::imageops::overlay(&mut expected, &shadow_pixels, 80, 65);
+            object.composite_into(&mut expected);
+            let shadow = app.inserted.as_mut().unwrap().image_style.as_mut().unwrap();
+            shadow.shadow = true;
+            shadow.shadow_color = Color32::RED;
+            shadow.shadow_offset = egui::vec2(20.0, 15.0);
+            shadow.shadow_blur = 0.0;
+            app.update_shape();
+            let rendered = app.composed_canvas().unwrap();
+            for (actual, expected) in rendered.pixels().zip(expected.pixels()) {
+                assert!(
+                    actual[3].abs_diff(expected[3]) <= 1
+                        && (actual[3] == 0
+                            || expected[3] == 0
+                            || (0..3)
+                                .all(|channel| actual[channel].abs_diff(expected[channel]) <= 1)),
+                    "{} silhouette: {actual:?} versus {expected:?}",
+                    kind.name()
+                );
+            }
+            assert!(
+                rendered.enumerate_pixels().any(|(x, y, pixel)| {
+                    !rect.contains(egui::pos2(x as f32, y as f32)) && pixel[3] > 0
+                }),
+                "{} shadow extends outside selector",
+                kind.name()
+            );
+            assert_eq!(app.inserted.as_ref().unwrap().rect, rect);
+            assert_eq!(app.inserted.as_ref().unwrap().pixels, source);
+            app.commit_insert(&ctx);
+            project::save(&file, app.pixels.as_ref().unwrap(), &app.objects).unwrap();
+            let (pixels, objects) = project::load(&file, &ctx).unwrap();
+            let mut restored = QuipIt {
+                pixels: Some(pixels),
+                objects,
+                ..Default::default()
+            };
+            assert_eq!(restored.composed_canvas().unwrap(), rendered);
+            restored.edit_object(0, &ctx);
+            let shadow = restored.inserted.as_ref().unwrap().image_style.unwrap();
+            assert!(shadow.shadow);
+            assert_eq!(shadow.shadow_color, Color32::RED);
+            assert_eq!(shadow.shadow_offset, egui::vec2(20.0, 15.0));
+            assert_eq!(shadow.shadow_blur, 0.0);
+            restored
+                .inserted
+                .as_mut()
+                .unwrap()
+                .image_style
+                .as_mut()
+                .unwrap()
+                .shadow = false;
+            restored.update_shape();
+            assert_ne!(restored.composed_canvas().unwrap(), rendered);
+        }
+    }
+
+    #[test]
+    fn older_shapes_gain_shadow_controls_and_shadow_color_edits_can_be_canceled() {
+        let ctx = egui::Context::default();
+        let mut app = QuipIt {
+            pixels: Some(RgbaImage::new(240, 200)),
+            ..Default::default()
+        };
+        app.place_shape(shapes::ShapeKind::Square, &ctx);
+        app.commit_insert(&ctx);
+        app.objects[0].object.image_style = None;
+        app.edit_object(0, &ctx);
+        let original = app.inserted.as_ref().unwrap().image_style.unwrap();
+        assert!(!original.shadow);
+        app.palette
+            .begin(colors::Target::ShapeShadow, original.shadow_color, 0.0);
+        let edit = app.palette.edit.as_mut().unwrap();
+        edit.color = Color32::RED;
+        edit.transparency = 50.0;
+        app.preview_color(app.palette.edit.unwrap());
+        assert_eq!(
+            app.inserted
+                .as_ref()
+                .unwrap()
+                .image_style
+                .unwrap()
+                .shadow_color,
+            Color32::from_rgba_unmultiplied(255, 0, 0, 128)
+        );
+        app.finish_color(false);
+        assert!(app.inserted.as_ref().unwrap().image_style.unwrap() == original);
     }
 
     #[test]

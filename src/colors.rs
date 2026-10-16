@@ -4,6 +4,7 @@ use eframe::egui::{self, Color32, Rect};
 pub enum Target {
     Border,
     Fill,
+    ShapeShadow,
     ImageBorder,
     ImageShadow,
     Image,
@@ -74,6 +75,7 @@ impl Palette {
         let title = match edit.target {
             Target::Border => "Border",
             Target::Fill => "Fill",
+            Target::ShapeShadow => "Shape shadow",
             Target::ImageBorder => "Image border",
             Target::ImageShadow => "Image shadow",
             Target::Image => "Image",
@@ -146,8 +148,14 @@ impl Palette {
                     }
                 }
                 if edit.target != Target::Background {
-                    ui.label("Transparency");
-                    ui.add(egui::Slider::new(&mut edit.transparency, 0.0..=100.0).suffix("%"));
+                    crate::toolbar::numeric(
+                        ui,
+                        "Transparency",
+                        &mut edit.transparency,
+                        0.0..=100.0,
+                        "%",
+                        false,
+                    );
                 }
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() {
@@ -173,16 +181,9 @@ impl Palette {
                 );
                 ui.separator();
                 let mut rgb = [edit.color.r(), edit.color.g(), edit.color.b()];
-                egui::Grid::new("custom_rgb_channels")
-                    .num_columns(3)
-                    .show(ui, |ui| {
-                        for (label, channel) in ["Red", "Green", "Blue"].into_iter().zip(&mut rgb) {
-                            ui.label(label);
-                            ui.add(egui::Slider::new(channel, 0..=255).show_value(false));
-                            ui.add(egui::DragValue::new(channel).range(0..=255));
-                            ui.end_row();
-                        }
-                    });
+                for (label, channel) in ["Red", "Green", "Blue"].into_iter().zip(&mut rgb) {
+                    crate::toolbar::numeric(ui, label, channel, 0..=255, "", false);
+                }
                 edit.color = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
                 ui.separator();
                 ui.horizontal(|ui| {
@@ -253,7 +254,7 @@ pub fn selector(ui: &mut egui::Ui, label: &str, color: Color32) -> egui::Respons
     let response = ui.add(
         egui::Button::new("")
             .min_size(egui::vec2(200.0, 30.0))
-            .stroke(egui::Stroke::new(1.0, ui.visuals().text_color())),
+            .stroke(egui::Stroke::new(1.0_f32, ui.visuals().text_color())),
     );
     let rect = Rect::from_min_size(
         egui::pos2(response.rect.left() + 7.0, response.rect.center().y - 9.0),
@@ -266,7 +267,7 @@ pub fn selector(ui: &mut egui::Ui, label: &str, color: Color32) -> egui::Respons
     ui.painter().rect_stroke(
         rect,
         0.0,
-        egui::Stroke::new(1.0, ui.visuals().text_color()),
+        egui::Stroke::new(1.0_f32, ui.visuals().text_color()),
         egui::StrokeKind::Inside,
     );
     ui.painter().text(
@@ -299,7 +300,7 @@ pub fn transparent_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
             .stroke(if selected {
                 ui.visuals().selection.stroke
             } else {
-                egui::Stroke::new(1.0, ui.visuals().text_color())
+                egui::Stroke::new(1.0_f32, ui.visuals().text_color())
             })
             .selected(selected),
     );
@@ -311,7 +312,7 @@ pub fn transparent_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
     ui.painter().rect_stroke(
         rect,
         0.0,
-        egui::Stroke::new(1.0, ui.visuals().text_color()),
+        egui::Stroke::new(1.0_f32, ui.visuals().text_color()),
         egui::StrokeKind::Inside,
     );
     response.on_hover_text("Transparent: no background color")
@@ -350,7 +351,7 @@ pub fn basic_palette(ui: &mut egui::Ui, current: Color32) -> Option<Color32> {
                     ui.painter().rect_stroke(
                         response.rect,
                         2.0,
-                        egui::Stroke::new(2.0, ui.visuals().selection.stroke.color),
+                        egui::Stroke::new(2.0_f32, ui.visuals().selection.stroke.color),
                         egui::StrokeKind::Inside,
                     );
                 }
@@ -374,7 +375,7 @@ fn swatch(ui: &mut egui::Ui, color: Color32, name: &str) -> egui::Response {
     ui.painter().rect_stroke(
         rect,
         0.0,
-        egui::Stroke::new(1.0, ui.visuals().text_color()),
+        egui::Stroke::new(1.0_f32, ui.visuals().text_color()),
         egui::StrokeKind::Inside,
     );
     response.on_hover_text(name)

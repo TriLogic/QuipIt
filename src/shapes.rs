@@ -146,7 +146,7 @@ fn choices(
 }
 
 fn paint(painter: &egui::Painter, kind: ShapeKind, rect: Rect, color: Color32) {
-    let stroke = Stroke::new(1.8, color);
+    let stroke = Stroke::new(1.8_f32, color);
     for (points, closed) in outlines(kind, rect) {
         painter.add(if closed {
             egui::Shape::closed_line(points, stroke)
@@ -631,7 +631,7 @@ pub fn curve_editor(
     let screen = |p: Pos2| canvas.min + (inner.min.to_vec2() + p.to_vec2() * inner.size()) * scale;
     ui.painter().add(egui::Shape::line(
         points[..count].iter().copied().map(screen).collect(),
-        Stroke::new(1.0, Color32::LIGHT_BLUE),
+        Stroke::new(1.0_f32, Color32::LIGHT_BLUE),
     ));
     let mut moved = None;
     for (index, point) in points[..count].iter().enumerate() {
@@ -641,7 +641,7 @@ pub fn curve_editor(
         ui.painter().rect_stroke(
             handle,
             0.0,
-            Stroke::new(1.0, Color32::BLACK),
+            Stroke::new(1.0_f32, Color32::BLACK),
             egui::StrokeKind::Inside,
         );
         let response = ui.interact(

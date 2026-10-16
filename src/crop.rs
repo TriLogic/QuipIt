@@ -42,7 +42,7 @@ pub fn selection_ui(
         ui.painter().rect_stroke(
             handle,
             0.0,
-            egui::Stroke::new(1.0, Color32::BLACK),
+            egui::Stroke::new(1.0_f32, Color32::BLACK),
             egui::StrokeKind::Inside,
         );
         let response = ui.interact(
