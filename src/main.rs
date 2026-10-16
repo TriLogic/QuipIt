@@ -2970,9 +2970,10 @@ mod tests {
             }
             assert_eq!(app.inserted.as_ref().unwrap().rect, rect);
             app.commit_insert(&ctx);
-            let file = tempfile::NamedTempFile::new().unwrap();
-            project::save(file.path(), app.pixels.as_ref().unwrap(), &app.objects).unwrap();
-            let (pixels, objects) = project::load(file.path(), &ctx).unwrap();
+            let directory = tempfile::tempdir().unwrap();
+            let file = directory.path().join("shadow.qip");
+            project::save(&file, app.pixels.as_ref().unwrap(), &app.objects).unwrap();
+            let (pixels, objects) = project::load(&file, &ctx).unwrap();
             let restored = QuipIt {
                 pixels: Some(pixels),
                 objects,

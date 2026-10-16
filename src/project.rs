@@ -162,13 +162,14 @@ mod tests {
 
     #[test]
     fn project_save_replaces_existing_file_and_keeps_transparency() {
-        let file = tempfile::NamedTempFile::new().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("test.qip");
         let ctx = egui::Context::default();
         let first = RgbaImage::new(3, 4);
-        save(file.path(), &first, &[]).unwrap();
+        save(&file, &first, &[]).unwrap();
         let second = RgbaImage::from_pixel(5, 2, image::Rgba([23, 45, 67, 89]));
-        save(file.path(), &second, &[]).unwrap();
-        let (loaded, objects) = load(file.path(), &ctx).unwrap();
+        save(&file, &second, &[]).unwrap();
+        let (loaded, objects) = load(&file, &ctx).unwrap();
         assert_eq!(loaded, second);
         assert!(objects.is_empty());
     }

@@ -27,7 +27,8 @@ class ReleaseTests(unittest.TestCase):
                 if target == "linux-x64":
                     with tarfile.open(archives[0]) as archive:
                         executable = next(m for m in archive.getmembers() if m.name.endswith("/quipit"))
-                        self.assertTrue(executable.mode & 0o111)
+                        if os.name != "nt":
+                            self.assertTrue(executable.mode & 0o111)
                         self.assertEqual(archive.extractfile(executable).read(), b"test executable")
                         self.assertTrue(any(m.name.endswith("runtime-libraries.txt") for m in archive.getmembers()))
                 else:
@@ -40,7 +41,8 @@ class ReleaseTests(unittest.TestCase):
                             self.assertEqual(plist["CFBundleShortVersionString"], release.version())
                             self.assertTrue(any("Contents/Resources/licenses/" in n for n in names))
                             info = archive.getinfo(next(n for n in names if n.endswith("MacOS/quipit")))
-                            self.assertTrue((info.external_attr >> 16) & 0o111)
+                            if os.name != "nt":
+                                self.assertTrue((info.external_attr >> 16) & 0o111)
                         else:
                             self.assertEqual(archive.read(next(n for n in names if n.endswith("quipit.exe"))), b"test executable")
 
