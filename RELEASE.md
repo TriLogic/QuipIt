@@ -29,6 +29,9 @@ Download the matching package from the draft's Assets:
 | Mac, Intel | `QuipIt-VERSION-macos-intel.zip` | Extract, then move `QuipIt.app` to Applications. |
 | Linux, Intel/AMD 64-bit | `QuipIt-VERSION-linux-x64.tar.gz` | Extract, then run `./quipit` in a graphical desktop session. |
 
+The Windows executable requires the [Microsoft Visual C++ v14 x64 runtime](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
+If Windows reports a missing `VCRUNTIME140.dll`, install that runtime first.
+
 These are initial portable packages, not installers. Windows packages have no
 publisher signature. Mac apps are ad-hoc signed, without an Apple Developer ID or
 notarization, so the operating system may block them. On a Mac, use System Settings
