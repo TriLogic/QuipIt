@@ -2,7 +2,7 @@ use ab_glyph::{Font, FontArc, Glyph, PxScale, ScaleFont};
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use image::{GrayImage, RgbaImage};
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Kind {
     Area,
     Speech,
@@ -18,18 +18,14 @@ impl Kind {
     }
 }
 
-#[derive(Clone)]
-pub struct TextObject {
-    pub data: TextData,
-    pub object: crate::insert::InsertedImage,
-}
-
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct TextData {
     pub kind: Kind,
     pub content: String,
+    #[serde(with = "font_serde")]
     pub font: FontArc,
     pub font_name: String,
+    #[serde(skip)]
     font_error: Option<String>,
     pub size: f32,
     pub bold: bool,
@@ -43,10 +39,48 @@ pub struct TextData {
     pub shadow_offset: Vec2,
     pub shadow_blur: f32,
     pub alignment: u8,
+    pub flip_horizontal: bool,
+    pub flip_vertical: bool,
     pub cursor: usize,
     pub anchor: Option<usize>,
+    #[serde(skip)]
     pub undo: Vec<(String, usize)>,
+    #[serde(skip)]
     pub redo: Vec<(String, usize)>,
+}
+
+/// Typography reused for new text objects without copying their content or geometry.
+#[derive(Clone)]
+pub struct FontSettings {
+    font: FontArc,
+    font_name: String,
+    size: f32,
+    bold: bool,
+    italic: bool,
+    color: Color32,
+    alignment: u8,
+}
+impl FontSettings {
+    pub fn from_text(data: &TextData) -> Self {
+        Self {
+            font: data.font.clone(),
+            font_name: data.font_name.clone(),
+            size: data.size,
+            bold: data.bold,
+            italic: data.italic,
+            color: data.color,
+            alignment: data.alignment,
+        }
+    }
+    pub fn apply(&self, data: &mut TextData) {
+        data.font = self.font.clone();
+        data.font_name = self.font_name.clone();
+        data.size = self.size;
+        data.bold = self.bold;
+        data.italic = self.italic;
+        data.color = self.color;
+        data.alignment = self.alignment;
+    }
 }
 
 impl TextData {
@@ -62,17 +96,15 @@ impl TextData {
             italic: false,
             color: Color32::BLACK,
             border: Color32::BLACK,
-            border_width: if kind == Kind::Area { 0.0 } else { 3.0 },
-            fill: if kind == Kind::Area {
-                Color32::TRANSPARENT
-            } else {
-                Color32::WHITE
-            },
+            border_width: 3.0,
+            fill: Color32::WHITE,
             shadow: false,
-            shadow_color: Color32::from_black_alpha(128),
+            shadow_color: Color32::BLACK,
             shadow_offset: egui::vec2(2.0, 2.0),
             shadow_blur: 2.0,
             alignment: 0,
+            flip_horizontal: false,
+            flip_vertical: false,
             cursor: 0,
             anchor: None,
             undo: Vec::new(),
@@ -110,6 +142,29 @@ impl TextData {
                 .chars()
                 .next()
                 .map_or(0, char::len_utf8)
+    }
+    fn word_boundary(&self, backward: bool) -> usize {
+        let mut position = self.cursor;
+        if backward {
+            let mut chars = self.content[..position].char_indices().rev().peekable();
+            while chars.peek().is_some_and(|(_, c)| c.is_whitespace()) {
+                position = chars.next().unwrap().0;
+            }
+            while chars.peek().is_some_and(|(_, c)| !c.is_whitespace()) {
+                position = chars.next().unwrap().0;
+            }
+        } else {
+            let mut chars = self.content[position..].char_indices().peekable();
+            while chars.peek().is_some_and(|(_, c)| !c.is_whitespace()) {
+                let (i, c) = chars.next().unwrap();
+                position = self.cursor + i + c.len_utf8();
+            }
+            while chars.peek().is_some_and(|(_, c)| c.is_whitespace()) {
+                let (i, c) = chars.next().unwrap();
+                position = self.cursor + i + c.len_utf8();
+            }
+        }
+        position
     }
     fn erase(&mut self, backward: bool) {
         let mut range = self.selection();
@@ -172,7 +227,9 @@ impl TextData {
                 egui::Event::Copy => ctx.copy_text(self.content[self.selection()].to_owned()),
                 egui::Event::Cut => {
                     ctx.copy_text(self.content[self.selection()].to_owned());
-                    self.erase(false);
+                    if !self.selection().is_empty() {
+                        self.erase(false);
+                    }
                 }
                 egui::Event::Key {
                     key,
@@ -213,16 +270,40 @@ impl TextData {
                         continue;
                     }
                     if key == egui::Key::Backspace {
+                        if command && self.selection().is_empty() {
+                            self.anchor = Some(self.word_boundary(true));
+                        }
                         self.erase(true);
                         continue;
                     }
                     if key == egui::Key::Delete {
+                        if command && self.selection().is_empty() {
+                            self.anchor = Some(self.word_boundary(false));
+                        }
                         self.erase(false);
                         continue;
                     }
                     let destination = match key {
-                        egui::Key::ArrowLeft => Some(self.previous()),
-                        egui::Key::ArrowRight => Some(self.next()),
+                        egui::Key::ArrowLeft => {
+                            Some(if !modifiers.shift && !self.selection().is_empty() {
+                                self.selection().start
+                            } else if command {
+                                self.word_boundary(true)
+                            } else {
+                                self.previous()
+                            })
+                        }
+                        egui::Key::ArrowRight => {
+                            Some(if !modifiers.shift && !self.selection().is_empty() {
+                                self.selection().end
+                            } else if command {
+                                self.word_boundary(false)
+                            } else {
+                                self.next()
+                            })
+                        }
+                        egui::Key::Home if command => Some(0),
+                        egui::Key::End if command => Some(self.content.len()),
                         egui::Key::Home => {
                             Some(self.content[..self.cursor].rfind('\n').map_or(0, |i| i + 1))
                         }
@@ -285,7 +366,13 @@ pub fn text_bounds(data: &TextData, width: u32, height: u32) -> Rect {
         Kind::Speech => (egui::vec2(0.0, 0.0), egui::vec2(1.0, 0.684)),
         Kind::Thought => (egui::vec2(0.0, 0.0), egui::vec2(1.0, 0.684)),
     };
-    let rect = Rect::from_min_max(Pos2::ZERO + size * min, Pos2::ZERO + size * max);
+    let mut rect = Rect::from_min_max(Pos2::ZERO + size * min, Pos2::ZERO + size * max);
+    if data.flip_vertical {
+        rect = Rect::from_min_max(
+            egui::pos2(rect.left(), size.y - rect.bottom()),
+            egui::pos2(rect.right(), size.y - rect.top()),
+        );
+    }
     let padding = (data.border_width / 2.0 + 6.0).min(rect.width().min(rect.height()) / 4.0);
     rect.shrink(padding)
 }
@@ -321,8 +408,12 @@ impl Layout {
         self.carets
             .iter()
             .min_by(|(_, a), (_, b)| {
-                let distance = |p: Pos2| (point.x - p.x).powi(2) + 4.0 * (point.y - p.y).powi(2);
-                distance(*a).total_cmp(&distance(*b))
+                // Choose the nearest line before comparing horizontal distance.
+                // Balloon lines can have very different left insets.
+                (point.y - a.y)
+                    .abs()
+                    .total_cmp(&(point.y - b.y).abs())
+                    .then_with(|| (point.x - a.x).abs().total_cmp(&(point.x - b.x).abs()))
             })
             .map_or(0, |(i, _)| *i)
     }
@@ -455,24 +546,56 @@ pub fn layout(data: &TextData, width: u32, height: u32) -> Layout {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Container {
+    kind: Kind,
+    border: Color32,
+    border_width: f32,
+    fill: Color32,
+    flip_horizontal: bool,
+    flip_vertical: bool,
+}
+impl Container {
+    pub fn from_text(data: &TextData) -> Self {
+        Self {
+            kind: data.kind,
+            border: data.border,
+            border_width: data.border_width,
+            fill: data.fill,
+            flip_horizontal: data.flip_horizontal,
+            flip_vertical: data.flip_vertical,
+        }
+    }
+    pub fn render(self, width: u32, height: u32) -> RgbaImage {
+        let shape = match self.kind {
+            Kind::Area => crate::shapes::ShapeKind::Square,
+            Kind::Speech => crate::shapes::ShapeKind::WordBalloon,
+            Kind::Thought => crate::shapes::ShapeKind::ThoughtBalloon,
+        };
+        let mut image = crate::shapes::render(
+            shape,
+            crate::shapes::Style {
+                border_width: self.border_width,
+                border: self.border,
+                fill: self.fill,
+                ..Default::default()
+            },
+            width,
+            height,
+        );
+        if self.flip_horizontal {
+            image::imageops::flip_horizontal_in_place(&mut image);
+        }
+        if self.flip_vertical {
+            image::imageops::flip_vertical_in_place(&mut image);
+        }
+        image
+    }
+}
+
 pub fn render(data: &TextData, width: u32, height: u32) -> (RgbaImage, Layout) {
     let layout = layout(data, width, height);
-    let shape = match data.kind {
-        Kind::Area => crate::shapes::ShapeKind::Square,
-        Kind::Speech => crate::shapes::ShapeKind::WordBalloon,
-        Kind::Thought => crate::shapes::ShapeKind::ThoughtBalloon,
-    };
-    let mut image = crate::shapes::render(
-        shape,
-        crate::shapes::Style {
-            border_width: data.border_width,
-            border: data.border,
-            fill: data.fill,
-            ..Default::default()
-        },
-        width,
-        height,
-    );
+    let mut image = Container::from_text(data).render(width, height);
     let mut mask = GrayImage::new(width, height);
     let bold = if data.bold {
         (data.size * 0.035).round().clamp(1.0, 6.0) as i32
@@ -505,7 +628,11 @@ pub fn render(data: &TextData, width: u32, height: u32) -> (RgbaImage, Layout) {
         }
     }
     if data.shadow {
-        let blurred = image::imageops::blur(&mask, data.shadow_blur.max(0.0));
+        let blurred = if data.shadow_blur > 0.0 {
+            image::imageops::blur(&mask, data.shadow_blur)
+        } else {
+            mask.clone()
+        };
         for (x, y, p) in blurred.enumerate_pixels() {
             let px = x as i32 + data.shadow_offset.x.round() as i32;
             let py = y as i32 + data.shadow_offset.y.round() as i32;
@@ -552,7 +679,6 @@ pub fn properties(
     overflow: bool,
 ) -> bool {
     let mut changed = false;
-    ui.heading("Text properties");
     ui.label(data.kind.name());
     egui::ComboBox::from_id_salt("text_font")
         .selected_text(&data.font_name)
@@ -640,7 +766,7 @@ pub fn properties(
         }
     }
     changed |= crate::toolbar::border_size(ui, &mut data.border_width);
-    changed |= ui.checkbox(&mut data.shadow, "Drop shadow").changed();
+    changed |= ui.checkbox(&mut data.shadow, "Text shadow").changed();
     if data.shadow {
         if crate::colors::selector(ui, "Shadow", data.shadow_color).clicked() {
             palette.begin(crate::colors::Target::TextShadow, data.shadow_color, 0.0);
@@ -690,16 +816,51 @@ pub fn canvas_editor(
             .ctx()
             .layer_id_at(pointer)
             .is_none_or(|layer| layer.order < egui::Order::Foreground);
-        if layout.bounds.contains(local) && unobscured {
-            data.cursor = layout.hit(local - egui::vec2(0.0, layout.line_height / 2.0));
-            data.anchor = None;
+        ui.data_mut(|state| state.remove::<usize>(id.with("selection_start")));
+        if object.text_edit_hit_test(
+            pointer,
+            canvas,
+            scale,
+            layout.bounds,
+            ui.input(|i| i.modifiers.alt),
+        ) && unobscured
+        {
+            if ui.input(|i| i.modifiers.shift) {
+                data.anchor.get_or_insert(data.cursor);
+            } else {
+                data.anchor = None;
+            }
+            let cursor = layout.hit(local - egui::vec2(0.0, layout.line_height / 2.0));
+            data.cursor = cursor;
+            ui.data_mut(|state| state.insert_temp(id.with("selection_start"), cursor));
             focus.request_focus();
         } else {
             focus.surrender_focus();
         }
     }
+    // Arrow keys belong to the text editor, rather than egui's directional
+    // focus navigation between toolbar buttons and other widgets.
+    ui.memory_mut(|memory| {
+        memory.set_focus_lock_filter(
+            id,
+            egui::EventFilter {
+                horizontal_arrows: true,
+                vertical_arrows: true,
+                ..Default::default()
+            },
+        );
+    });
     if !focus.has_focus() {
         return (false, false);
+    }
+    if ui.input(|i| i.pointer.primary_down() && i.pointer.is_decidedly_dragging())
+        && let Some(pointer) = ui.input(|i| i.pointer.interact_pos())
+    {
+        let local = object.screen_to_source(pointer, canvas, scale);
+        if let Some(start) = ui.data(|state| state.get_temp::<usize>(id.with("selection_start"))) {
+            data.anchor.get_or_insert(start);
+            data.cursor = layout.hit(local - egui::vec2(0.0, layout.line_height / 2.0));
+        }
     }
     let result = data.keyboard(ui.ctx(), &layout);
     let layout = layout_after_edit(data, size, &layout, result.0);
@@ -803,6 +964,63 @@ mod tests {
         result
     }
     #[test]
+    fn zero_text_shadow_blur_matches_original_glyph_coverage() {
+        let mut data = TextData::new(Kind::Area, 24.0);
+        data.content = "Sharp".into();
+        data.fill = Color32::TRANSPARENT;
+        data.border_width = 0.0;
+        data.color = Color32::RED;
+        let expected = render(&data, 150, 80).0;
+        data.color = Color32::TRANSPARENT;
+        data.shadow = true;
+        data.shadow_color = Color32::RED;
+        data.shadow_offset = Vec2::ZERO;
+        data.shadow_blur = 0.0;
+        assert_eq!(render(&data, 150, 80).0, expected);
+    }
+
+    #[test]
+    fn flipping_keeps_letters_upright_and_moves_the_balloon_text_area() {
+        for horizontal in [false, true] {
+            for vertical in [false, true] {
+                let mut data = TextData::new(Kind::Speech, 24.0);
+                data.content = "Readable".into();
+                data.flip_horizontal = horizontal;
+                data.flip_vertical = vertical;
+                let (combined, layout) = render(&data, 320, 240);
+                let mut letters = data.clone();
+                letters.border = Color32::TRANSPARENT;
+                letters.fill = Color32::TRANSPARENT;
+                let letters = render(&letters, 320, 240).0;
+                for (x, y, p) in letters.enumerate_pixels() {
+                    if p[3] == 255 {
+                        assert_eq!(combined.get_pixel(x, y), p);
+                    }
+                }
+                assert_eq!(layout.bounds, text_bounds(&data, 320, 240));
+                data.flip_horizontal = false;
+                assert_eq!(render(&data, 320, 240).1.carets, layout.carets);
+            }
+        }
+    }
+
+    #[test]
+    fn selections_collapse_and_empty_cut_preserves_text() {
+        let mut data = TextData::new(Kind::Area, 20.0);
+        data.insert("one two");
+        input(&mut data, vec![egui::Event::Cut]);
+        assert_eq!(data.content, "one two");
+        data.anchor = Some(0);
+        input(&mut data, vec![key(egui::Key::ArrowLeft, false)]);
+        assert_eq!(data.cursor, 0);
+        data.anchor = Some(data.content.len());
+        input(&mut data, vec![key(egui::Key::ArrowRight, false)]);
+        assert_eq!(data.cursor, data.content.len());
+        input(&mut data, vec![key(egui::Key::Backspace, true)]);
+        assert_eq!(data.content, "one ");
+    }
+
+    #[test]
     fn italic_does_not_change_balloon_geometry() {
         for kind in [Kind::Area, Kind::Speech, Kind::Thought] {
             let mut data = TextData::new(kind, 24.0);
@@ -884,6 +1102,8 @@ mod tests {
     #[test]
     fn glyphs_and_shadow_are_clipped_to_the_text_area_and_overflow_is_reported() {
         let mut data = TextData::new(Kind::Area, 24.0);
+        data.fill = Color32::TRANSPARENT;
+        data.border_width = 0.0;
         data.content = "Many words repeated ".repeat(20);
         data.shadow = true;
         data.shadow_color = Color32::RED;
@@ -919,5 +1139,17 @@ mod tests {
                 .pixels()
                 .any(|p| p[0] > p[1] && p[3] > 0)
         );
+    }
+}
+
+mod font_serde {
+    use ab_glyph::{Font, FontArc};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    pub fn serialize<S: Serializer>(font: &FontArc, serializer: S) -> Result<S::Ok, S::Error> {
+        font.font_data().serialize(serializer)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<FontArc, D::Error> {
+        let bytes = Vec::<u8>::deserialize(deserializer)?;
+        FontArc::try_from_vec(bytes).map_err(serde::de::Error::custom)
     }
 }

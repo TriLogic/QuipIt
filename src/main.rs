@@ -7,6 +7,8 @@ mod colors;
 mod crop;
 mod geometry;
 mod insert;
+mod objects;
+mod project;
 mod shapes;
 mod text;
 mod toolbar;
@@ -39,9 +41,9 @@ struct EditorState {
     active_shape: Option<(shapes::ShapeKind, shapes::Style)>,
     rotation: f32,
     curve_edit: bool,
-    texts: Vec<text::TextObject>,
+    objects: Vec<objects::Object>,
     active_text: Option<text::TextData>,
-    text_before: Option<(usize, text::TextObject)>,
+    object_before: Option<(usize, objects::Object)>,
 }
 
 #[derive(Default)]
@@ -49,6 +51,7 @@ struct QuipIt {
     pixels: Option<RgbaImage>,
     texture: Option<TextureHandle>,
     path: Option<PathBuf>,
+    project_path: Option<PathBuf>,
     undo: Vec<EditorState>,
     redo: Vec<EditorState>,
     width: u32,
@@ -76,13 +79,18 @@ struct QuipIt {
     new_height: u32,
     new_aspect_ratio: Option<f64>,
     new_background: Option<Color32>,
+    background_selected: bool,
+    background_before: Option<RgbaImage>,
+    background_preview: Option<Color32>,
     inserted: Option<InsertedImage>,
     canvas_rect: Option<(egui::Rect, f32)>,
     confirm_close: bool,
-    texts: Vec<text::TextObject>,
+    close_approved: bool,
+    objects: Vec<objects::Object>,
     active_text: Option<text::TextData>,
-    text_before: Option<(usize, text::TextObject)>,
+    object_before: Option<(usize, objects::Object)>,
     text_dirty: bool,
+    last_font_settings: Option<text::FontSettings>,
     text_render_size: Option<[u32; 2]>,
     text_overflow: bool,
     show_text_picker: bool,
@@ -91,6 +99,8 @@ struct QuipIt {
 
 impl QuipIt {
     fn refresh(&mut self, ctx: &egui::Context) {
+        self.background_selected = false;
+        ctx.memory_mut(|m| m.surrender_focus(egui::Id::new("canvas_text_editor")));
         self.palette.picking = false;
         self.inserted = None;
         self.active_shape = None;
@@ -98,7 +108,7 @@ impl QuipIt {
         self.curve_edit = false;
         self.canvas_rect = None;
         self.active_text = None;
-        self.text_before = None;
+        self.object_before = None;
         self.text_render_size = None;
         self.selection = None;
         self.drag_start = None;
@@ -109,13 +119,35 @@ impl QuipIt {
 
     fn composed_canvas(&self) -> Option<RgbaImage> {
         let mut pixels = self.pixels.clone()?;
-        for object in &self.texts {
-            object.object.composite_into(&mut pixels);
+        let active_position = self
+            .object_before
+            .as_ref()
+            .map_or(self.objects.len(), |(i, _)| *i);
+        for index in 0..=self.objects.len() {
+            if index == active_position
+                && let Some(active) = &self.inserted
+            {
+                active.composite_into(&mut pixels);
+            }
+            if let Some(object) = self.objects.get(index)
+                && object.visible
+            {
+                object.object.composite_into(&mut pixels);
+            }
         }
         Some(pixels)
     }
     fn upload_canvas(&mut self, ctx: &egui::Context) {
-        if let Some(pixels) = self.composed_canvas() {
+        if let Some(mut pixels) = self.pixels.clone() {
+            let end = self
+                .object_before
+                .as_ref()
+                .map_or(self.objects.len(), |(i, _)| *i);
+            for object in self.objects.iter().take(end) {
+                if object.visible {
+                    object.object.composite_into(&mut pixels);
+                }
+            }
             self.width = pixels.width();
             self.height = pixels.height();
             self.texture = Some(ctx.load_texture(
@@ -132,6 +164,7 @@ impl QuipIt {
 
     fn open(&mut self, ctx: &egui::Context) {
         let Some(path) = rfd::FileDialog::new()
+            .add_filter("QuipIt project", &["qip", "quipit"])
             .add_filter(
                 "Images",
                 &[
@@ -143,11 +176,33 @@ impl QuipIt {
         else {
             return;
         };
+        if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("qip") || e.eq_ignore_ascii_case("quipit"))
+        {
+            match project::load(&path, ctx) {
+                Ok((pixels, objects)) => {
+                    self.pixels = Some(pixels);
+                    self.objects = objects;
+                    self.project_path = Some(path);
+                    self.path = None;
+                    self.undo.clear();
+                    self.redo.clear();
+                    self.dirty = false;
+                    self.lock_ratio = true;
+                    self.refresh(ctx);
+                    self.status = "Project opened".into();
+                }
+                Err(error) => self.status = format!("Could not open project: {error}"),
+            }
+            return;
+        }
         match image::open(&path) {
             Ok(image) => {
                 self.pixels = Some(image.to_rgba8());
-                self.texts.clear();
+                self.objects.clear();
                 self.path = Some(path);
+                self.project_path = None;
                 self.undo.clear();
                 self.redo.clear();
                 self.dirty = false;
@@ -169,8 +224,9 @@ impl QuipIt {
                     .to_srgba_unmultiplied(),
             ),
         ));
-        self.texts.clear();
+        self.objects.clear();
         self.path = None;
+        self.project_path = None;
         self.undo.clear();
         self.redo.clear();
         self.dirty = true;
@@ -178,6 +234,28 @@ impl QuipIt {
         self.show_new = false;
         self.refresh(ctx);
         self.status = "New image".into();
+    }
+
+    fn continue_document_action(&mut self, ctx: &egui::Context) {
+        // Finish the object only after approval so Cancel preserves the edit.
+        self.commit_insert(ctx);
+        if self.confirm_close {
+            self.close_approved = true;
+            self.dirty = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        if self.pending_open {
+            self.open(ctx);
+        }
+        if self.pending_new {
+            self.new_aspect_ratio = None;
+            self.new_width = 1280;
+            self.new_height = 720;
+            self.show_new = true;
+        }
+        self.pending_new = false;
+        self.confirm_close = false;
+        self.pending_open = false;
     }
 
     fn insert(&mut self, ctx: &egui::Context) {
@@ -205,7 +283,7 @@ impl QuipIt {
                 self.selection = None;
                 self.crop_mode = false;
                 self.show_resize = false;
-                self.status = "Drag the inserted image to move it; drag its handles to resize (Shift keeps proportions). Click elsewhere to merge. Escape cancels.".into();
+                self.status = "Drag the image to move it; drag handles to resize. Click elsewhere to accept; Escape cancels.".into();
             }
             Err(error) => self.status = format!("Could not insert image: {error}"),
         }
@@ -221,6 +299,9 @@ impl QuipIt {
         let width = (side * 1.5).min(canvas.width() as f32).max(1.0) as u32;
         let height = (side * 0.95).min(canvas.height() as f32).max(1.0) as u32;
         let mut data = text::TextData::new(kind, (side / 8.0).clamp(12.0, 512.0));
+        if let Some(settings) = &self.last_font_settings {
+            settings.apply(&mut data);
+        }
         if kind != text::Kind::Area {
             data.border_width = self.last_shape_border_width.unwrap_or(3.0);
         }
@@ -233,7 +314,7 @@ impl QuipIt {
         object.image_style = Some(insert::ImageStyle::default());
         self.inserted = Some(object);
         self.active_text = Some(data);
-        self.text_before = None;
+        self.object_before = None;
         self.text_render_size = Some([width, height]);
         self.text_dirty = false;
         self.text_overflow = layout.overflow;
@@ -246,21 +327,33 @@ impl QuipIt {
         self.status="Type on the canvas. Ctrl+Enter inserts a line break. Click away to accept; Escape cancels.".into();
     }
 
-    fn edit_text(&mut self, index: usize, ctx: &egui::Context) {
+    fn edit_object(&mut self, index: usize, ctx: &egui::Context) {
+        // Committing may insert the previously selected object before this index.
+        let index = index
+            + usize::from(
+                self.object_before
+                    .as_ref()
+                    .is_some_and(|(i, _)| *i <= index),
+            );
         self.commit_insert(ctx);
-        let original = self.texts.remove(index);
-        self.active_text = Some(original.data.clone());
+        let mut original = self.objects.remove(index);
+        original.visible = true;
+        self.active_text = original.data.clone();
         self.inserted = Some(original.object.clone());
-        self.text_before = Some((index, original));
-        self.active_shape = None;
-        self.curve_edit = false;
+        self.inserted.as_mut().unwrap().restore_texture(ctx);
+        self.active_shape = original.shape;
+        self.curve_edit = original.curve_edit;
+        self.shape_rotation = original.rotation;
+        self.object_before = Some((index, original));
         self.text_render_size = None;
         self.text_dirty = true;
-        self.shape_rotation = 0.0;
         self.upload_canvas(ctx);
         self.update_shape();
-        ctx.memory_mut(|m| m.request_focus(egui::Id::new("canvas_text_editor")));
-        self.status="Editing text. Ctrl+Enter inserts a line break. Click away accepts; Escape restores the previous text.".into();
+        if self.active_text.is_some() {
+            ctx.memory_mut(|m| m.request_focus(egui::Id::new("canvas_text_editor")));
+        }
+        self.status =
+            "Editing object. Apply keeps changes; Escape restores the previous version.".into();
     }
 
     fn place_shape(&mut self, kind: shapes::ShapeKind, ctx: &egui::Context) {
@@ -297,6 +390,9 @@ impl QuipIt {
     }
 
     fn update_shape(&mut self) {
+        if let Some(data) = &self.active_text {
+            self.last_font_settings = Some(text::FontSettings::from_text(data));
+        }
         if self.curve_edit
             && let (Some((kind, style)), Some(inserted)) =
                 (&mut self.active_shape, &mut self.inserted)
@@ -336,6 +432,9 @@ impl QuipIt {
             }
         }
         if let (Some(data), Some(object)) = (&self.active_text, &mut self.inserted) {
+            if let Some(style) = &mut object.image_style {
+                style.shadow_container = Some(text::Container::from_text(data));
+            }
             let size = object.content_size();
             if self.text_dirty || self.text_render_size != Some(size) {
                 let (pixels, layout) = text::render(data, size[0], size[1]);
@@ -351,38 +450,113 @@ impl QuipIt {
     }
 
     fn commit_insert(&mut self, ctx: &egui::Context) {
+        self.background_selected = false;
         self.update_shape();
-        if self.active_text.is_some() {
-            self.checkpoint();
-            let data = self.active_text.take().unwrap();
-            let object = self.inserted.take().unwrap();
-            let position = self
-                .text_before
-                .take()
-                .map_or(self.texts.len(), |(index, _)| index.min(self.texts.len()));
-            self.texts
-                .insert(position, text::TextObject { data, object });
-            self.dirty = true;
-            self.refresh(ctx);
-            ctx.memory_mut(|m| m.surrender_focus(egui::Id::new("canvas_text_editor")));
-            self.status = "Text accepted. Click it to edit again.".into();
+        if self.inserted.is_none() {
             return;
         }
-        if let Some(inserted) = self.inserted.take() {
-            let pixels = inserted.composite(self.pixels.as_ref().unwrap());
-            self.replace(pixels, ctx);
-            self.status = "Inserted image merged into canvas".into();
-        }
+        self.checkpoint();
+        let object = self.inserted.take().unwrap();
+        let data = self.active_text.take();
+        let shape = self.active_shape.take();
+        let (position, name, visible) = self.object_before.take().map_or_else(
+            || {
+                let kind = data
+                    .as_ref()
+                    .map(|d| d.kind.name())
+                    .or_else(|| shape.map(|(kind, _)| kind.name()))
+                    .unwrap_or("Image");
+                (
+                    self.objects.len(),
+                    format!("{} {}", kind, self.objects.len() + 1),
+                    true,
+                )
+            },
+            |(index, original)| {
+                (
+                    index.min(self.objects.len()),
+                    original.name,
+                    original.visible,
+                )
+            },
+        );
+        self.objects.insert(
+            position,
+            objects::Object {
+                name,
+                visible,
+                data,
+                shape,
+                object,
+                rotation: self.shape_rotation,
+                curve_edit: self.curve_edit,
+            },
+        );
+        self.dirty = true;
+        self.refresh(ctx);
+        ctx.memory_mut(|m| m.surrender_focus(egui::Id::new("canvas_text_editor")));
+        self.status =
+            "Object accepted. Select it on the canvas or in Objects to edit again.".into();
     }
 
     fn save(&mut self, save_as: bool) {
         self.update_shape();
-        let Some(mut pixels) = self.composed_canvas() else {
+        let Some(background) = &self.pixels else {
             return;
         };
-        if let Some(inserted) = &self.inserted {
-            inserted.composite_into(&mut pixels);
+        let path = if save_as || self.project_path.is_none() {
+            rfd::FileDialog::new()
+                .add_filter("QuipIt project", &["qip", "quipit"])
+                .set_file_name("untitled.qip")
+                .save_file()
+        } else {
+            self.project_path.clone()
+        };
+        let Some(mut path) = path else { return };
+        if !path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("qip") || e.eq_ignore_ascii_case("quipit"))
+        {
+            path.set_extension("qip");
         }
+        let mut objects = self.objects.clone();
+        if let Some(object) = &self.inserted {
+            let position = self
+                .object_before
+                .as_ref()
+                .map_or(objects.len(), |(i, _)| *i);
+            let name = self
+                .object_before
+                .as_ref()
+                .map_or_else(|| "Object".into(), |(_, o)| o.name.clone());
+            objects.insert(
+                position,
+                objects::Object {
+                    name,
+                    visible: true,
+                    object: object.clone(),
+                    data: self.active_text.clone(),
+                    shape: self.active_shape,
+                    rotation: self.shape_rotation,
+                    curve_edit: self.curve_edit,
+                },
+            );
+        }
+        match project::save(&path, background, &objects) {
+            Ok(()) => {
+                self.status = format!("Project saved: {}", path.display());
+                self.project_path = Some(path);
+                self.dirty = false;
+            }
+            Err(error) => self.status = format!("Could not save project: {error}"),
+        }
+    }
+
+    fn export_image(&mut self, save_as: bool) {
+        self.update_shape();
+        let Some(pixels) = self.composed_canvas() else {
+            return;
+        };
         let path = if save_as || self.path.is_none() {
             rfd::FileDialog::new()
                 .add_filter("PNG image", &["png"])
@@ -414,10 +588,282 @@ impl QuipIt {
             Ok(()) => {
                 self.status = format!("Saved {}", path.display());
                 self.path = Some(path);
-                self.dirty = false;
             }
             Err(error) => self.status = format!("Could not save image: {error}"),
         }
+    }
+
+    fn select_background(&mut self, ctx: &egui::Context) {
+        if self.pixels.is_none() {
+            return;
+        }
+        self.commit_insert(ctx);
+        self.background_selected = true;
+        self.crop_mode = false;
+        self.selection = None;
+        self.status =
+            "Canvas selected. Adjust its fill color and transparency in Properties.".into();
+    }
+
+    fn begin_background_color(&mut self) {
+        let Some(pixels) = &self.pixels else {
+            return;
+        };
+        let Some(pixel) = pixels.pixels().next() else {
+            return;
+        };
+        let color = Color32::from_rgba_unmultiplied(pixel[0], pixel[1], pixel[2], pixel[3]);
+        self.background_before = Some(pixels.clone());
+        self.background_preview = Some(color);
+        self.palette
+            .begin(colors::Target::CanvasBackground, color, 0.0);
+    }
+
+    fn selected_object_name(&self) -> Option<String> {
+        self.inserted.as_ref()?;
+        Some(self.object_before.as_ref().map_or_else(
+            || {
+                let kind = self
+                    .active_text
+                    .as_ref()
+                    .map(|d| d.kind.name())
+                    .or_else(|| self.active_shape.map(|(kind, _)| kind.name()))
+                    .unwrap_or("Image");
+                format!("{} {}", kind, self.objects.len() + 1)
+            },
+            |(_, object)| object.name.clone(),
+        ))
+    }
+
+    fn objects_panel(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+        let mut select = None;
+        let mut row_action = None;
+        let mut select_background = false;
+        let active_name = self.selected_object_name();
+        let active_index = active_name.as_ref().map(|_| {
+            self.object_before
+                .as_ref()
+                .map_or(self.objects.len(), |(i, _)| *i)
+        });
+        egui::TopBottomPanel::top("objects")
+            .resizable(true)
+            .default_height(300.0)
+            .min_height(150.0)
+            .max_height((ui.available_height() - 180.0).max(150.0))
+            .show_inside(ui, |ui| {
+                if self.palette.edit.is_some()
+                    || self.show_new
+                    || self.pending_new
+                    || self.pending_open
+                    || self.confirm_close
+                {
+                    ui.disable();
+                }
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new("Objects")
+                            .heading()
+                            .color(Color32::LIGHT_GRAY),
+                    )
+                    .truncate(),
+                );
+                egui::ScrollArea::vertical()
+                    .id_salt("object_list")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        // Include the object being edited at its original position.
+                        let count = self.objects.len() + usize::from(active_index.is_some());
+                        for index in (0..count).rev() {
+                            let (name, visible) = if active_index == Some(index) {
+                                (
+                                    active_name.as_ref().unwrap().clone(),
+                                    self.object_before.as_ref().is_none_or(|(_, o)| o.visible),
+                                )
+                            } else {
+                                let object = &self.objects
+                                    [index - usize::from(active_index.is_some_and(|i| i < index))];
+                                (object.name.clone(), object.visible)
+                            };
+                            ui.push_id(index, |ui| {
+                                ui.horizontal(|ui| {
+                                    if objects::visibility_button(ui, visible).clicked() {
+                                        row_action = Some((index, "visibility", index));
+                                    }
+                                    let response = ui.add(
+                                        egui::Button::new(name)
+                                            .truncate()
+                                            .min_size(egui::vec2(ui.available_width(), 24.0))
+                                            .selected(active_index == Some(index))
+                                            .sense(egui::Sense::click_and_drag()),
+                                    );
+                                    if response.clicked() && active_index != Some(index) {
+                                        select = Some(
+                                            index
+                                                - usize::from(
+                                                    active_index.is_some_and(|i| i < index),
+                                                ),
+                                        );
+                                    }
+                                    if ui.is_enabled() {
+                                        response.dnd_set_drag_payload(objects::ObjectDrag(index));
+                                        if response
+                                            .dnd_hover_payload::<objects::ObjectDrag>()
+                                            .is_some()
+                                        {
+                                            let above = ui
+                                                .input(|i| i.pointer.interact_pos())
+                                                .is_some_and(|p| p.y < response.rect.center().y);
+                                            let y = if above {
+                                                response.rect.top()
+                                            } else {
+                                                response.rect.bottom()
+                                            };
+                                            ui.painter().hline(
+                                                response.rect.x_range(),
+                                                y,
+                                                egui::Stroke::new(
+                                                    2.0,
+                                                    ui.visuals().selection.bg_fill,
+                                                ),
+                                            );
+                                            if let Some(source) = response
+                                                .dnd_release_payload::<objects::ObjectDrag>()
+                                            {
+                                                let slot = index + usize::from(above);
+                                                let target = slot - usize::from(source.0 < slot);
+                                                row_action = Some((source.0, "reorder", target));
+                                            }
+                                        }
+                                    }
+                                    response.context_menu(|ui| {
+                                        for (label, action) in [
+                                            ("Duplicate", "duplicate"),
+                                            ("Delete", "delete"),
+                                            ("Move up", "forward"),
+                                            ("Move down", "backward"),
+                                            ("Move to top", "front"),
+                                            ("Move to bottom", "back"),
+                                        ] {
+                                            if ui.button(label).clicked() {
+                                                row_action = Some((index, action, index));
+                                                ui.close();
+                                            }
+                                        }
+                                    });
+                                });
+                            });
+                        }
+                        if self.pixels.is_some() {
+                            ui.horizontal(|ui| {
+                                ui.add_space(32.0);
+                                if ui
+                                    .add(
+                                        egui::Button::new("Canvas")
+                                            .selected(self.background_selected)
+                                            .min_size(egui::vec2(ui.available_width(), 24.0)),
+                                    )
+                                    .clicked()
+                                {
+                                    select_background = true;
+                                }
+                            });
+                        }
+                    });
+            });
+        if select_background {
+            self.select_background(ctx);
+        } else if let Some((index, action, target)) = row_action {
+            self.object_list_action(index, action, target, ctx);
+        } else if let Some(index) = select {
+            // Hidden objects become visible when selected for editing.
+            self.edit_object(index, ctx);
+        }
+    }
+
+    fn object_list_action(
+        &mut self,
+        index: usize,
+        action: &str,
+        target: usize,
+        ctx: &egui::Context,
+    ) {
+        // List indices include the active object at its original depth.
+        self.commit_insert(ctx);
+        if index >= self.objects.len() {
+            return;
+        }
+        self.checkpoint();
+        match action {
+            "visibility" => self.objects[index].visible = !self.objects[index].visible,
+            "delete" => {
+                self.objects.remove(index);
+            }
+            "duplicate" => {
+                let mut copy = self.objects[index].clone();
+                copy.name = format!("{} copy", copy.name);
+                copy.object.rect = copy.object.rect.translate(egui::vec2(12.0, 12.0));
+                copy.object.restore_texture(ctx);
+                self.objects.insert(index + 1, copy);
+            }
+            _ => {
+                let target = match action {
+                    "forward" => (index + 1).min(self.objects.len() - 1),
+                    "backward" => index.saturating_sub(1),
+                    "front" => self.objects.len() - 1,
+                    "back" => 0,
+                    "reorder" => target.min(self.objects.len() - 1),
+                    _ => return,
+                };
+                let object = self.objects.remove(index);
+                self.objects.insert(target, object);
+            }
+        }
+        self.dirty = true;
+        self.refresh(ctx);
+    }
+
+    fn delete_object(&mut self, ctx: &egui::Context) {
+        if self.inserted.is_none() {
+            return;
+        }
+        self.checkpoint();
+        self.object_before = None;
+        self.refresh(ctx);
+        self.dirty = true;
+    }
+
+    #[cfg(test)]
+    fn arrange_object(&mut self, command: &str, ctx: &egui::Context) {
+        if self.inserted.is_none() {
+            return;
+        }
+        let index = self
+            .object_before
+            .as_ref()
+            .map_or(self.objects.len(), |(i, _)| *i);
+        self.commit_insert(ctx);
+        self.checkpoint();
+        let target = match command {
+            "forward" => (index + 1).min(self.objects.len() - 1),
+            "backward" => index.saturating_sub(1),
+            "front" => self.objects.len() - 1,
+            "back" => 0,
+            "duplicate" => {
+                let mut copy = self.objects[index].clone();
+                copy.object.restore_texture(ctx);
+                copy.name = format!("{} copy", copy.name);
+                copy.object.rect = copy.object.rect.translate(egui::vec2(12.0, 12.0));
+                self.objects.insert(index + 1, copy);
+                index + 1
+            }
+            _ => return,
+        };
+        if command != "duplicate" {
+            let object = self.objects.remove(index);
+            self.objects.insert(target, object);
+        }
+        self.dirty = true;
+        self.edit_object(target, ctx);
     }
 
     fn snapshot(&self) -> Option<EditorState> {
@@ -427,9 +873,9 @@ impl QuipIt {
             active_shape: self.active_shape.filter(|_| self.inserted.is_some()),
             rotation: self.shape_rotation,
             curve_edit: self.curve_edit,
-            texts: self.texts.clone(),
+            objects: self.objects.clone(),
             active_text: self.active_text.clone(),
-            text_before: self.text_before.clone(),
+            object_before: self.object_before.clone(),
         })
     }
 
@@ -450,8 +896,8 @@ impl QuipIt {
         if self.inserted.is_some() {
             self.checkpoint();
         }
-        if let Some((index, original)) = self.text_before.take() {
-            self.texts.insert(index.min(self.texts.len()), original);
+        if let Some((index, original)) = self.object_before.take() {
+            self.objects.insert(index.min(self.objects.len()), original);
             self.upload_pending = true;
         }
         self.active_text = None;
@@ -463,6 +909,7 @@ impl QuipIt {
         self.curve_edit = false;
     }
 
+    #[cfg(test)]
     fn replace(&mut self, pixels: RgbaImage, ctx: &egui::Context) {
         self.checkpoint();
         self.pixels = Some(pixels);
@@ -491,7 +938,7 @@ impl QuipIt {
         let Some(pixels) = &self.pixels else { return };
         let cropped = image::imageops::crop_imm(pixels, x, y, width, height).to_image();
         self.checkpoint();
-        for text in &mut self.texts {
+        for text in &mut self.objects {
             text.object.rect = text.object.rect.translate(-egui::vec2(x as f32, y as f32));
         }
         self.pixels = Some(cropped);
@@ -516,18 +963,32 @@ impl QuipIt {
         );
         self.checkpoint();
         let font_scale = (scale.x * scale.y).sqrt();
-        for text in &mut self.texts {
+        for text in &mut self.objects {
             text.object.rect = egui::Rect::from_min_size(
                 egui::Pos2::ZERO + text.object.rect.min.to_vec2() * scale,
                 text.object.rect.size() * scale,
             );
-            text.data.size *= font_scale;
-            text.data.border_width *= font_scale;
-            text.data.shadow_offset *= font_scale;
-            text.data.shadow_blur *= font_scale;
-            let size = text.object.content_size();
-            let (pixels, _) = text::render(&text.data, size[0], size[1]);
-            text.object.update_pixels(pixels);
+            if let Some(data) = &mut text.data {
+                data.size *= font_scale;
+                data.border_width *= font_scale;
+                data.shadow_offset *= font_scale;
+                data.shadow_blur *= font_scale;
+                if let Some(style) = &mut text.object.image_style {
+                    style.shadow_container = Some(text::Container::from_text(data));
+                }
+                let size = text.object.content_size();
+                let (pixels, _) = text::render(data, size[0], size[1]);
+                text.object.update_pixels(pixels);
+            } else if let Some((kind, style)) = &mut text.shape {
+                style.border_width *= font_scale;
+                let size = text.object.rect.size();
+                text.object.update_pixels(shapes::render(
+                    *kind,
+                    *style,
+                    size.x.round().max(1.0) as u32,
+                    size.y.round().max(1.0) as u32,
+                ));
+            }
             text.object.prepare();
         }
         self.pixels = Some(resized);
@@ -557,6 +1018,13 @@ impl QuipIt {
                     style.border_transparency = edit.transparency;
                 }
             }
+            colors::Target::ImageShadow => {
+                if let Some(inserted) = &mut self.inserted
+                    && let Some(style) = &mut inserted.image_style
+                {
+                    style.shadow_color = color;
+                }
+            }
             colors::Target::Image => {
                 if let Some(inserted) = &mut self.inserted
                     && let Some(style) = &mut inserted.image_style
@@ -582,7 +1050,27 @@ impl QuipIt {
                     }
                 }
             }
-            colors::Target::Background => self.new_background = Some(color),
+            colors::Target::Background | colors::Target::CanvasBackground => {
+                if let Some(original) = &self.background_before {
+                    if self.background_preview != Some(color) {
+                        let original_color = colors::with_transparency(
+                            edit.original_color,
+                            edit.original_transparency,
+                        );
+                        if color == original_color {
+                            self.pixels = Some(original.clone());
+                        } else if let Some(pixels) = &mut self.pixels {
+                            for pixel in pixels.pixels_mut() {
+                                *pixel = image::Rgba(color.to_srgba_unmultiplied());
+                            }
+                        }
+                        self.background_preview = Some(color);
+                        self.upload_pending = true;
+                    }
+                } else {
+                    self.new_background = Some(color);
+                }
+            }
         }
     }
 
@@ -597,6 +1085,16 @@ impl QuipIt {
                 self.palette
                     .remember(colors::with_transparency(edit.color, edit.transparency));
             }
+        }
+        self.background_preview = None;
+        if let Some(original) = self.background_before.take() {
+            let preview = self.pixels.replace(original);
+            if accept && preview.as_ref() != self.pixels.as_ref() {
+                self.checkpoint();
+                self.pixels = preview;
+                self.dirty = true;
+            }
+            self.upload_pending = true;
         }
         self.palette.picking = false;
         self.palette.custom_original = None;
@@ -638,7 +1136,7 @@ impl QuipIt {
             self.history(false, ctx);
         }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)) {
-            self.discard_selection();
+            self.delete_object(ctx);
         }
         if save {
             self.commit_insert(ctx);
@@ -662,20 +1160,24 @@ impl QuipIt {
                 }
             }
             self.pixels = Some(previous.pixels);
-            self.texts = previous.texts;
+            self.objects = previous.objects;
+            for object in &mut self.objects {
+                object.object.restore_texture(ctx);
+            }
             self.refresh(ctx);
             self.inserted = previous.inserted;
             self.active_shape = previous.active_shape;
             self.shape_rotation = previous.rotation;
             self.curve_edit = previous.curve_edit;
             self.active_text = previous.active_text;
-            self.text_before = previous.text_before;
+            self.object_before = previous.object_before;
             self.text_dirty = true;
             self.text_render_size = None;
             if let Some(inserted) = &mut self.inserted {
                 inserted.restore_texture(ctx);
             }
             self.update_shape();
+            self.upload_canvas(ctx);
             self.dirty = true;
             if self.active_shape.is_some() {
                 self.status =
@@ -739,7 +1241,7 @@ impl QuipIt {
                 self.commit_insert(ctx);
             }
         }
-        if ctx.input(|i| i.viewport().close_requested()) && self.dirty {
+        if ctx.input(|i| i.viewport().close_requested()) && self.dirty && !self.close_approved {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.confirm_close = true;
         }
@@ -776,15 +1278,21 @@ impl QuipIt {
                         }
                         ui.separator();
                         if ui
-                            .add(egui::Button::new("Save").shortcut_text("Ctrl+S"))
+                            .add(egui::Button::new("Save project").shortcut_text("Ctrl+S"))
                             .clicked()
                         {
                             ui.close();
+                            self.commit_insert(ctx);
                             self.save(false);
                         }
-                        if ui.button("Save as…").clicked() {
+                        if ui.button("Save project as…").clicked() {
                             ui.close();
+                            self.commit_insert(ctx);
                             self.save(true);
+                        }
+                        if ui.button("Export image…").clicked() {
+                            ui.close();
+                            self.export_image(true);
                         }
                     });
                     ui.separator();
@@ -820,10 +1328,12 @@ impl QuipIt {
                     ui.add_enabled_ui(self.pixels.is_some(), |ui| {
                         if ui.button("Crop").clicked() {
                             ui.close();
+                            self.commit_insert(ctx);
                             self.begin_crop();
                         }
                         if ui.button("Resize…").clicked() {
                             ui.close();
+                            self.commit_insert(ctx);
                             let pixels = self.pixels.as_ref().unwrap();
                             self.width = pixels.width();
                             self.height = pixels.height();
@@ -869,7 +1379,8 @@ impl QuipIt {
                         if tool_button(ui, Icon::Insert, "Insert image", loaded, false).clicked() {
                             self.insert(ctx);
                         }
-                        if tool_button(ui, Icon::Save, "Save", loaded, false).clicked() {
+                        if tool_button(ui, Icon::Save, "Save project", loaded, false).clicked() {
+                            self.commit_insert(ctx);
                             self.save(false);
                         }
                         ui.separator();
@@ -893,11 +1404,13 @@ impl QuipIt {
                         )
                         .clicked()
                         {
+                            self.commit_insert(ctx);
                             self.begin_crop();
                         }
                         if tool_button(ui, Icon::Resize, "Resize image", loaded, self.show_resize)
                             .clicked()
                         {
+                            self.commit_insert(ctx);
                             let pixels = self.pixels.as_ref().unwrap();
                             self.width = pixels.width();
                             self.height = pixels.height();
@@ -941,13 +1454,29 @@ impl QuipIt {
         {
             let mut apply = false;
             let mut cancel = false;
-            let previous_rotation = self.shape_rotation;
             let mut horizontal = false;
             let mut vertical = false;
             let panel = egui::SidePanel::right("shape_properties")
-                .exact_width(230.0)
-                .resizable(false)
+                .default_width(260.0)
+                .min_width(230.0)
+                .resizable(true)
                 .show(ctx, |ui| {
+                    self.objects_panel(ctx, ui);
+                    let previous_rotation = self.shape_rotation;
+                    let selected_name = self
+                        .selected_object_name()
+                        .or_else(|| self.background_selected.then(|| "Canvas".into()));
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(selected_name.as_deref().unwrap_or("Properties"))
+                                .heading()
+                                .color(Color32::LIGHT_GRAY),
+                        )
+                        .truncate(),
+                    );
+                    if selected_name.is_none() {
+                        return previous_rotation;
+                    }
                     if self.palette.edit.is_some()
                         || self.show_new
                         || self.pending_new
@@ -956,10 +1485,321 @@ impl QuipIt {
                     {
                         ui.disable();
                     }
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        if let Some(data) = &mut self.active_text {
-                            self.text_dirty |=
-                                text::properties(ui, data, &mut self.palette, self.text_overflow);
+                    egui::ScrollArea::vertical()
+                        .id_salt("object_properties")
+                        .show(ui, |ui| {
+                            if self.background_selected {
+                                let pixel = self.pixels.as_ref().unwrap().get_pixel(0, 0).0;
+                                let color = Color32::from_rgba_unmultiplied(
+                                    pixel[0], pixel[1], pixel[2], pixel[3],
+                                );
+                                if colors::selector(ui, "Fill color", color).clicked() {
+                                    self.begin_background_color();
+                                }
+                                return;
+                            }
+                            if let Some((_, object)) = &mut self.object_before {
+                                ui.label("Name");
+                                if ui.text_edit_singleline(&mut object.name).changed() {
+                                    self.dirty = true;
+                                }
+                                ui.separator();
+                            }
+                            if let Some(data) = &mut self.active_text {
+                                self.text_dirty |= text::properties(
+                                    ui,
+                                    data,
+                                    &mut self.palette,
+                                    self.text_overflow,
+                                );
+                                if let Some(object) = &mut self.inserted
+                                    && let Some(style) = &mut object.image_style
+                                {
+                                    ui.separator();
+                                    ui.checkbox(&mut style.shadow, "Border shadow");
+                                    if style.shadow {
+                                        if colors::selector(ui, "Shadow color", style.shadow_color)
+                                            .clicked()
+                                        {
+                                            self.palette.begin(
+                                                colors::Target::ImageShadow,
+                                                style.shadow_color,
+                                                0.0,
+                                            );
+                                        }
+                                        ui.add(
+                                            egui::Slider::new(
+                                                &mut style.shadow_offset.x,
+                                                -64.0..=64.0,
+                                            )
+                                            .text("X offset"),
+                                        );
+                                        ui.add(
+                                            egui::Slider::new(
+                                                &mut style.shadow_offset.y,
+                                                -64.0..=64.0,
+                                            )
+                                            .text("Y offset"),
+                                        );
+                                        ui.add(
+                                            egui::Slider::new(&mut style.shadow_blur, 0.0..=32.0)
+                                                .text("Blur"),
+                                        );
+                                    }
+                                }
+                                ui.separator();
+                                ui.label("Rotation");
+                                ui.add(
+                                    egui::Slider::new(&mut self.shape_rotation, -180.0..=180.0)
+                                        .suffix("°"),
+                                );
+                                ui.horizontal(|ui| {
+                                    if tool_button(
+                                        ui,
+                                        Icon::RotateLeft,
+                                        "Rotate left 90°",
+                                        true,
+                                        false,
+                                    )
+                                    .clicked()
+                                    {
+                                        self.shape_rotation -= 90.0;
+                                    }
+                                    if tool_button(
+                                        ui,
+                                        Icon::RotateRight,
+                                        "Rotate right 90°",
+                                        true,
+                                        false,
+                                    )
+                                    .clicked()
+                                    {
+                                        self.shape_rotation += 90.0;
+                                    }
+                                    vertical = tool_button(
+                                        ui,
+                                        Icon::FlipVertical,
+                                        "Flip vertically",
+                                        true,
+                                        false,
+                                    )
+                                    .clicked();
+                                    horizontal = tool_button(
+                                        ui,
+                                        Icon::FlipHorizontal,
+                                        "Flip horizontally",
+                                        true,
+                                        false,
+                                    )
+                                    .clicked();
+                                });
+                                ui.separator();
+                                ui.horizontal(|ui| {
+                                    cancel = ui.button("Cancel").clicked();
+                                    apply = ui.button("Apply").clicked();
+                                });
+                                ui.label(
+                                    "Ctrl+Enter: line break. Click away: accept. Escape: cancel.",
+                                );
+                                return;
+                            }
+                            let Some((kind, style)) = self.active_shape.as_mut() else {
+                                if let Some(inserted) = &mut self.inserted {
+                                    let thumbnail = inserted.texture_id();
+                                    if let Some(style) = &mut inserted.image_style {
+                                        toolbar::border_size(ui, &mut style.border_width);
+                                        if colors::selector(
+                                            ui,
+                                            "Border",
+                                            colors::with_transparency(
+                                                style.border,
+                                                style.border_transparency,
+                                            ),
+                                        )
+                                        .clicked()
+                                        {
+                                            self.palette.begin(
+                                                colors::Target::ImageBorder,
+                                                style.border,
+                                                style.border_transparency,
+                                            );
+                                        }
+                                        if colors::image_selector(ui, thumbnail).clicked() {
+                                            self.palette.begin(
+                                                colors::Target::Image,
+                                                Color32::WHITE,
+                                                style.image_transparency,
+                                            );
+                                        }
+                                        ui.add(
+                                            egui::Slider::new(
+                                                &mut style.image_transparency,
+                                                0.0..=100.0,
+                                            )
+                                            .integer()
+                                            .show_value(false),
+                                        );
+                                        ui.horizontal(|ui| {
+                                            if ui
+                                                .add_enabled(
+                                                    style.image_transparency > 0.0,
+                                                    egui::Button::new("−"),
+                                                )
+                                                .on_hover_text("Decrease transparency by 1%")
+                                                .clicked()
+                                            {
+                                                style.image_transparency =
+                                                    (style.image_transparency.round() - 1.0)
+                                                        .max(0.0);
+                                            }
+                                            ui.add(
+                                                egui::DragValue::new(&mut style.image_transparency)
+                                                    .range(0.0..=100.0)
+                                                    .speed(1.0)
+                                                    .max_decimals(0)
+                                                    .suffix("%"),
+                                            );
+                                            if ui
+                                                .add_enabled(
+                                                    style.image_transparency < 100.0,
+                                                    egui::Button::new("+"),
+                                                )
+                                                .on_hover_text("Increase transparency by 1%")
+                                                .clicked()
+                                            {
+                                                style.image_transparency =
+                                                    (style.image_transparency.round() + 1.0)
+                                                        .min(100.0);
+                                            }
+                                        });
+                                        ui.checkbox(&mut style.shadow, "Drop shadow");
+                                        if style.shadow {
+                                            if colors::selector(ui, "Shadow", style.shadow_color)
+                                                .clicked()
+                                            {
+                                                self.palette.begin(
+                                                    colors::Target::ImageShadow,
+                                                    style.shadow_color,
+                                                    0.0,
+                                                );
+                                            }
+                                            ui.add(
+                                                egui::Slider::new(
+                                                    &mut style.shadow_offset.x,
+                                                    -64.0..=64.0,
+                                                )
+                                                .text("X offset"),
+                                            );
+                                            ui.add(
+                                                egui::Slider::new(
+                                                    &mut style.shadow_offset.y,
+                                                    -64.0..=64.0,
+                                                )
+                                                .text("Y offset"),
+                                            );
+                                            ui.add(
+                                                egui::Slider::new(
+                                                    &mut style.shadow_blur,
+                                                    0.0..=32.0,
+                                                )
+                                                .text("Blur"),
+                                            );
+                                        }
+                                        ui.label("Rotation");
+                                        ui.add(
+                                            egui::Slider::new(
+                                                &mut self.shape_rotation,
+                                                -180.0..=180.0,
+                                            )
+                                            .suffix("°"),
+                                        );
+                                        ui.horizontal(|ui| {
+                                            if tool_button(
+                                                ui,
+                                                Icon::RotateLeft,
+                                                "Rotate left 90°",
+                                                true,
+                                                false,
+                                            )
+                                            .clicked()
+                                            {
+                                                self.shape_rotation -= 90.0;
+                                            }
+                                            if tool_button(
+                                                ui,
+                                                Icon::RotateRight,
+                                                "Rotate right 90°",
+                                                true,
+                                                false,
+                                            )
+                                            .clicked()
+                                            {
+                                                self.shape_rotation += 90.0;
+                                            }
+                                            vertical = tool_button(
+                                                ui,
+                                                Icon::FlipVertical,
+                                                "Flip vertically",
+                                                true,
+                                                false,
+                                            )
+                                            .clicked();
+                                            horizontal = tool_button(
+                                                ui,
+                                                Icon::FlipHorizontal,
+                                                "Flip horizontally",
+                                                true,
+                                                false,
+                                            )
+                                            .clicked();
+                                        });
+                                        ui.separator();
+                                        ui.horizontal(|ui| {
+                                            cancel = ui.button("Cancel").clicked();
+                                            apply = ui.button("Apply").clicked();
+                                        });
+                                        ui.label("Shift keeps proportions while resizing.");
+                                        return;
+                                    }
+                                }
+                                return;
+                            };
+                            ui.label(kind.name());
+                            if matches!(kind, shapes::ShapeKind::Curve4 | shapes::ShapeKind::Curve5)
+                            {
+                                ui.horizontal(|ui| {
+                                    ui.selectable_value(&mut self.curve_edit, true, "Edit curve");
+                                    ui.selectable_value(
+                                        &mut self.curve_edit,
+                                        false,
+                                        "Move / resize",
+                                    );
+                                });
+                                if self.curve_edit {
+                                    ui.label(
+                                        "Drag the endpoints and control points to shape the bends.",
+                                    );
+                                }
+                            }
+
+                            ui.separator();
+                            toolbar::border_size(ui, &mut style.border_width);
+                            let closed = !matches!(
+                                kind,
+                                shapes::ShapeKind::Line
+                                    | shapes::ShapeKind::Curve3
+                                    | shapes::ShapeKind::Curve4
+                                    | shapes::ShapeKind::Curve5
+                            );
+                            if colors::selector(ui, "Border", style.border).clicked() {
+                                self.palette
+                                    .begin(colors::Target::Border, style.border, 0.0);
+                            }
+                            ui.add_enabled_ui(closed, |ui| {
+                                if colors::selector(ui, "Fill", style.fill).clicked() {
+                                    self.palette.begin(colors::Target::Fill, style.fill, 0.0);
+                                }
+                            });
                             ui.separator();
                             ui.label("Rotation");
                             ui.add(
@@ -1005,206 +1845,11 @@ impl QuipIt {
                                 cancel = ui.button("Cancel").clicked();
                                 apply = ui.button("Apply").clicked();
                             });
-                            ui.label("Ctrl+Enter: line break. Click away: accept. Escape: cancel.");
-                            return;
-                        }
-                        let Some((kind, style)) = self.active_shape.as_mut() else {
-                            if let Some(inserted) = &mut self.inserted {
-                                let thumbnail = inserted.texture_id();
-                                if let Some(style) = &mut inserted.image_style {
-                                    ui.heading("Image properties");
-                                    toolbar::border_size(ui, &mut style.border_width);
-                                    if colors::selector(
-                                        ui,
-                                        "Border",
-                                        colors::with_transparency(
-                                            style.border,
-                                            style.border_transparency,
-                                        ),
-                                    )
-                                    .clicked()
-                                    {
-                                        self.palette.begin(
-                                            colors::Target::ImageBorder,
-                                            style.border,
-                                            style.border_transparency,
-                                        );
-                                    }
-                                    if colors::image_selector(ui, thumbnail).clicked() {
-                                        self.palette.begin(
-                                            colors::Target::Image,
-                                            Color32::WHITE,
-                                            style.image_transparency,
-                                        );
-                                    }
-                                    ui.add(
-                                        egui::Slider::new(
-                                            &mut style.image_transparency,
-                                            0.0..=100.0,
-                                        )
-                                        .integer()
-                                        .show_value(false),
-                                    );
-                                    ui.horizontal(|ui| {
-                                        if ui
-                                            .add_enabled(
-                                                style.image_transparency > 0.0,
-                                                egui::Button::new("−"),
-                                            )
-                                            .on_hover_text("Decrease transparency by 1%")
-                                            .clicked()
-                                        {
-                                            style.image_transparency =
-                                                (style.image_transparency.round() - 1.0).max(0.0);
-                                        }
-                                        ui.add(
-                                            egui::DragValue::new(&mut style.image_transparency)
-                                                .range(0.0..=100.0)
-                                                .speed(1.0)
-                                                .max_decimals(0)
-                                                .suffix("%"),
-                                        );
-                                        if ui
-                                            .add_enabled(
-                                                style.image_transparency < 100.0,
-                                                egui::Button::new("+"),
-                                            )
-                                            .on_hover_text("Increase transparency by 1%")
-                                            .clicked()
-                                        {
-                                            style.image_transparency =
-                                                (style.image_transparency.round() + 1.0).min(100.0);
-                                        }
-                                    });
-                                    ui.label("Rotation");
-                                    ui.add(
-                                        egui::Slider::new(&mut self.shape_rotation, -180.0..=180.0)
-                                            .suffix("°"),
-                                    );
-                                    ui.horizontal(|ui| {
-                                        if tool_button(
-                                            ui,
-                                            Icon::RotateLeft,
-                                            "Rotate left 90°",
-                                            true,
-                                            false,
-                                        )
-                                        .clicked()
-                                        {
-                                            self.shape_rotation -= 90.0;
-                                        }
-                                        if tool_button(
-                                            ui,
-                                            Icon::RotateRight,
-                                            "Rotate right 90°",
-                                            true,
-                                            false,
-                                        )
-                                        .clicked()
-                                        {
-                                            self.shape_rotation += 90.0;
-                                        }
-                                        vertical = tool_button(
-                                            ui,
-                                            Icon::FlipVertical,
-                                            "Flip vertically",
-                                            true,
-                                            false,
-                                        )
-                                        .clicked();
-                                        horizontal = tool_button(
-                                            ui,
-                                            Icon::FlipHorizontal,
-                                            "Flip horizontally",
-                                            true,
-                                            false,
-                                        )
-                                        .clicked();
-                                    });
-                                    ui.separator();
-                                    ui.horizontal(|ui| {
-                                        cancel = ui.button("Cancel").clicked();
-                                        apply = ui.button("Apply").clicked();
-                                    });
-                                    ui.label("Shift keeps proportions while resizing.");
-                                    return;
-                                }
-                            }
-                            ui.heading("Tool properties");
-                            ui.label(
-                                "Insert an image or select a 2D shape to adjust its properties.",
-                            );
-                            return;
-                        };
-                        ui.heading("Shape properties");
-                        ui.label(kind.name());
-                        if matches!(kind, shapes::ShapeKind::Curve4 | shapes::ShapeKind::Curve5) {
-                            ui.horizontal(|ui| {
-                                ui.selectable_value(&mut self.curve_edit, true, "Edit curve");
-                                ui.selectable_value(&mut self.curve_edit, false, "Move / resize");
-                            });
-                            if self.curve_edit {
-                                ui.label(
-                                    "Drag the endpoints and control points to shape the bends.",
-                                );
-                            }
-                        }
-
-                        ui.separator();
-                        toolbar::border_size(ui, &mut style.border_width);
-                        let closed = !matches!(
-                            kind,
-                            shapes::ShapeKind::Line
-                                | shapes::ShapeKind::Curve3
-                                | shapes::ShapeKind::Curve4
-                                | shapes::ShapeKind::Curve5
-                        );
-                        if colors::selector(ui, "Border", style.border).clicked() {
-                            self.palette
-                                .begin(colors::Target::Border, style.border, 0.0);
-                        }
-                        ui.add_enabled_ui(closed, |ui| {
-                            if colors::selector(ui, "Fill", style.fill).clicked() {
-                                self.palette.begin(colors::Target::Fill, style.fill, 0.0);
-                            }
+                            ui.label("Shift keeps proportions while resizing.");
                         });
-                        ui.separator();
-                        ui.label("Rotation");
-                        ui.add(
-                            egui::Slider::new(&mut self.shape_rotation, -180.0..=180.0).suffix("°"),
-                        );
-                        ui.horizontal(|ui| {
-                            if tool_button(ui, Icon::RotateLeft, "Rotate left 90°", true, false)
-                                .clicked()
-                            {
-                                self.shape_rotation -= 90.0;
-                            }
-                            if tool_button(ui, Icon::RotateRight, "Rotate right 90°", true, false)
-                                .clicked()
-                            {
-                                self.shape_rotation += 90.0;
-                            }
-                            vertical =
-                                tool_button(ui, Icon::FlipVertical, "Flip vertically", true, false)
-                                    .clicked();
-                            horizontal = tool_button(
-                                ui,
-                                Icon::FlipHorizontal,
-                                "Flip horizontally",
-                                true,
-                                false,
-                            )
-                            .clicked();
-                        });
-                        ui.separator();
-                        ui.horizontal(|ui| {
-                            cancel = ui.button("Cancel").clicked();
-                            apply = ui.button("Apply").clicked();
-                        });
-                        ui.label("Shift keeps proportions while resizing.");
-                    });
+                    previous_rotation
                 });
-            let rotation_delta = self.shape_rotation - previous_rotation;
+            let rotation_delta = self.shape_rotation - panel.inner;
             if rotation_delta != 0.0 || horizontal || vertical {
                 if let Some(inserted) = &mut self.inserted {
                     if let Some((kind, style)) = &mut self.active_shape {
@@ -1216,6 +1861,11 @@ impl QuipIt {
                             horizontal,
                             vertical,
                         );
+                    } else if let Some(data) = &mut self.active_text {
+                        data.flip_horizontal ^= horizontal;
+                        data.flip_vertical ^= vertical;
+                        self.text_dirty |= horizontal || vertical;
+                        inserted.transform_image(rotation_delta, false, false);
                     } else {
                         inserted.transform_image(rotation_delta, horizontal, vertical);
                     }
@@ -1394,7 +2044,8 @@ impl QuipIt {
             self.show_resize &= open;
         }
         let mut accept_text = false;
-        let mut edit_text_index = None;
+        let mut edit_object_index = None;
+        let mut select_background = false;
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(Color32::from_rgb(35, 38, 44)))
             .show(ctx, |ui| {
@@ -1435,7 +2086,9 @@ impl QuipIt {
                         Color32::WHITE,
                     );
                     self.canvas_rect = Some((image_rect, scale));
-                    if self.inserted.is_none()
+                    if ui.is_enabled()
+                        && !self.crop_mode
+                        && self.inserted.is_none()
                         && self.palette.edit.is_none()
                         && let Some(pointer) = ctx.input(|i| {
                             i.pointer
@@ -1447,9 +2100,13 @@ impl QuipIt {
                             .layer_id_at(pointer)
                             .is_none_or(|layer| layer.order < egui::Order::Foreground)
                     {
-                        edit_text_index = self.texts.iter().rposition(|text| {
-                            text.object.screen_rect(image_rect, scale).contains(pointer)
+                        edit_object_index = self.objects.iter().rposition(|text| {
+                            text.visible
+                                && image_rect.contains(pointer)
+                                && text.object.hit_test(image_rect, scale, pointer)
                         });
+                        select_background =
+                            edit_object_index.is_none() && image_rect.contains(pointer);
                     }
 
                     let sampling = self.palette.picking;
@@ -1468,7 +2125,7 @@ impl QuipIt {
                                     .is_none_or(|layer| layer.order < egui::Order::Foreground)
                             })
                             .and_then(|point| {
-                                colors::sample(self.pixels.as_ref().unwrap(), image_rect, point)
+                                colors::sample(&self.composed_canvas().unwrap(), image_rect, point)
                             })
                         {
                             if let Some(edit) = &mut self.palette.edit {
@@ -1579,12 +2236,19 @@ impl QuipIt {
                         painter.galley(origin + egui::vec2(8.0, 5.0), galley, Color32::WHITE);
                     }
                     if let Some(inserted) = &mut self.inserted {
+                        inserted.preview(ui, image_rect, scale);
+                        if let Some((index, _)) = &self.object_before {
+                            for object in self.objects.iter().skip(*index) {
+                                if object.visible {
+                                    object.object.preview(ui, image_rect, scale);
+                                }
+                            }
+                        }
                         if sampling || self.palette.edit.is_some() {
-                            inserted.preview(ui, image_rect, scale);
+                            // Picking colors leaves only the object preview visible.
                         } else if self.curve_edit
                             && let Some((kind, style)) = &mut self.active_shape
                         {
-                            inserted.preview(ui, image_rect, scale);
                             shapes::curve_editor(
                                 ui,
                                 *kind,
@@ -1599,6 +2263,13 @@ impl QuipIt {
                                 image_rect,
                                 scale,
                                 self.active_shape.is_some() || inserted.image_style.is_some(),
+                                self.active_text.as_ref().map(|data| {
+                                    text::text_bounds(
+                                        data,
+                                        inserted.pixels.width(),
+                                        inserted.pixels.height(),
+                                    )
+                                }),
                             );
                             if delta != 0.0 {
                                 if let Some((kind, style)) = &mut self.active_shape {
@@ -1643,8 +2314,10 @@ impl QuipIt {
         if accept_text {
             self.commit_insert(ctx);
         }
-        if let Some(index) = edit_text_index {
-            self.edit_text(index, ctx);
+        if let Some(index) = edit_object_index {
+            self.edit_object(index, ctx);
+        } else if select_background {
+            self.select_background(ctx);
         }
         if self.upload_pending {
             self.upload_canvas(ctx);
@@ -1657,6 +2330,9 @@ impl QuipIt {
             }
             if let Some(accept) = decision {
                 self.finish_color(accept);
+            }
+            if self.upload_pending {
+                self.upload_canvas(ctx);
             }
             self.update_shape();
         }
@@ -1705,22 +2381,10 @@ impl QuipIt {
                             self.save(false);
                         }
                         if discard || (save && !self.dirty) {
-                            if self.confirm_close {
+                            self.continue_document_action(ctx);
+                            if save {
                                 self.dirty = false;
-                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                             }
-                            if self.pending_open {
-                                self.open(ctx);
-                            }
-                            if self.pending_new {
-                                self.new_aspect_ratio = None;
-                                self.new_width = 1280;
-                                self.new_height = 720;
-                                self.show_new = true;
-                            }
-                            self.pending_new = false;
-                            self.confirm_close = false;
-                            self.pending_open = false;
                         }
                         if ui.button("Cancel").clicked() {
                             self.pending_new = false;
@@ -1851,7 +2515,9 @@ mod tests {
             ..Default::default()
         };
         app.commit_insert(&ctx);
-        let result = app.pixels.as_ref().unwrap();
+        assert_eq!(app.pixels.as_ref(), Some(&original));
+        assert_eq!(app.objects.len(), 1);
+        let result = app.composed_canvas().unwrap();
         assert_eq!(result.dimensions(), (4, 4));
         assert_eq!(result.get_pixel(0, 1).0, [128, 0, 127, 255]);
         assert_eq!(result.get_pixel(1, 1), original.get_pixel(1, 1));
@@ -1862,7 +2528,7 @@ mod tests {
         assert_eq!(app.pixels.as_ref(), Some(&original));
         app.history(true, &ctx);
         assert_eq!(
-            app.pixels.as_ref().unwrap().get_pixel(0, 1).0,
+            app.composed_canvas().unwrap().get_pixel(0, 1).0,
             [128, 0, 127, 255]
         );
     }
@@ -1964,7 +2630,7 @@ mod tests {
     fn ctrl_s_writes_to_existing_filename() {
         let ctx = egui::Context::default();
         let path = std::env::temp_dir().join(format!(
-            "quipit-shortcut-{}-{}.png",
+            "quipit-shortcut-{}-{}.qip",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1974,19 +2640,19 @@ mod tests {
         let pixels = RgbaImage::from_pixel(2, 3, image::Rgba([20, 40, 60, 255]));
         let mut app = QuipIt {
             pixels: Some(pixels.clone()),
-            path: Some(path.clone()),
+            project_path: Some(path.clone()),
             dirty: true,
             ..Default::default()
         };
         press_ctrl(&mut app, &ctx, egui::Key::S);
-        let saved = image::open(&path).unwrap().to_rgba8();
+        let (saved, _) = project::load(&path, &ctx).unwrap();
         std::fs::remove_file(path).unwrap();
         assert_eq!(saved, pixels);
         assert!(!app.dirty);
     }
 
     #[test]
-    fn shape_properties_update_preview_and_merge_as_one_undoable_edit() {
+    fn shape_properties_update_preview_and_accept_as_one_undoable_edit() {
         let ctx = egui::Context::default();
         let original = RgbaImage::from_pixel(100, 80, image::Rgba([255; 4]));
         let mut app = QuipIt {
@@ -2006,7 +2672,7 @@ mod tests {
         assert_eq!(app.inserted.as_ref().unwrap().pixels.dimensions(), (40, 20));
         app.commit_insert(&ctx);
         assert_eq!(
-            app.pixels.as_ref().unwrap().get_pixel(30, 20).0,
+            app.composed_canvas().unwrap().get_pixel(30, 20).0,
             [255, 127, 127, 255]
         );
         assert!(app.active_shape.is_none());
@@ -2176,6 +2842,219 @@ mod tests {
         );
     }
     #[test]
+    fn arrow_keys_move_the_text_caret_without_navigating_to_other_widgets() {
+        for kind in [text::Kind::Area, text::Kind::Speech, text::Kind::Thought] {
+            let ctx = egui::Context::default();
+            let mut app = QuipIt {
+                pixels: Some(RgbaImage::from_pixel(800, 600, image::Rgba([255; 4]))),
+                ..Default::default()
+            };
+            app.refresh(&ctx);
+            app.place_text(kind, &ctx);
+            text_ui_frame(&mut app, &ctx, vec![egui::Event::Text("abc\ndef".into())]);
+            text_ui_frame(&mut app, &ctx, vec![]);
+            for (key, expected) in [
+                (egui::Key::ArrowLeft, 6),
+                (
+                    egui::Key::ArrowUp,
+                    if kind != text::Kind::Thought { 2 } else { 0 },
+                ),
+                (
+                    egui::Key::ArrowRight,
+                    if kind != text::Kind::Thought { 3 } else { 1 },
+                ),
+                (egui::Key::ArrowDown, 7),
+            ] {
+                text_ui_frame(
+                    &mut app,
+                    &ctx,
+                    vec![egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                );
+                assert_eq!(
+                    app.active_text.as_ref().unwrap().cursor,
+                    expected,
+                    "key {key:?}, focus {:?}, carets {:?}",
+                    ctx.memory(|m| m.focused()),
+                    text::layout(
+                        app.active_text.as_ref().unwrap(),
+                        app.inserted.as_ref().unwrap().pixels.width(),
+                        app.inserted.as_ref().unwrap().pixels.height()
+                    )
+                    .carets
+                );
+                assert!(ctx.memory(|memory| memory.has_focus(egui::Id::new("canvas_text_editor"))));
+            }
+        }
+    }
+
+    #[test]
+    fn new_text_objects_reuse_typography_but_start_with_fresh_content_and_box_style() {
+        let ctx = egui::Context::default();
+        let mut app = QuipIt {
+            pixels: Some(RgbaImage::new(800, 600)),
+            ..Default::default()
+        };
+        app.place_text(text::Kind::Speech, &ctx);
+        let data = app.active_text.as_mut().unwrap();
+        data.font = text::mono();
+        data.font_name = "Custom font".into();
+        data.size = 37.0;
+        data.bold = true;
+        data.italic = true;
+        data.color = Color32::RED;
+        data.alignment = 2;
+        data.content = "Do not copy".into();
+        data.fill = Color32::GREEN;
+        data.border = Color32::BLUE;
+        data.border_width = 0.0;
+        for kind in [text::Kind::Area, text::Kind::Thought, text::Kind::Speech] {
+            app.place_text(kind, &ctx);
+            let data = app.active_text.as_ref().unwrap();
+            assert_eq!(data.font_name, "Custom font");
+            assert_eq!(data.size, 37.0);
+            assert!(data.bold && data.italic);
+            assert_eq!(data.color, Color32::RED);
+            assert_eq!(data.alignment, 2);
+            assert!(data.content.is_empty());
+            assert_eq!(data.fill, Color32::WHITE);
+            assert_eq!(data.border, Color32::BLACK);
+            if kind == text::Kind::Area {
+                assert_eq!(data.border_width, 3.0);
+            }
+        }
+        app.new_width = 400;
+        app.new_height = 300;
+        app.new_image(&ctx);
+        app.place_text(text::Kind::Area, &ctx);
+        assert_eq!(app.active_text.as_ref().unwrap().size, 37.0);
+    }
+
+    #[test]
+    fn border_shadows_follow_all_text_containers_and_survive_project_round_trip() {
+        let ctx = egui::Context::default();
+        for kind in [text::Kind::Area, text::Kind::Speech, text::Kind::Thought] {
+            let mut app = QuipIt {
+                pixels: Some(RgbaImage::new(240, 200)),
+                ..Default::default()
+            };
+            app.place_text(kind, &ctx);
+            app.active_text.as_mut().unwrap().fill = Color32::TRANSPARENT;
+            app.active_text.as_mut().unwrap().border_width = 3.0;
+            let rect = app.inserted.as_ref().unwrap().rect;
+            let style = app.inserted.as_mut().unwrap().image_style.as_mut().unwrap();
+            style.shadow = true;
+            style.shadow_color = Color32::from_black_alpha(180);
+            style.shadow_offset = egui::vec2(20.0, 15.0);
+            style.shadow_blur = 2.0;
+            app.update_shape();
+            let empty = app.composed_canvas().unwrap();
+            assert!(
+                empty
+                    .enumerate_pixels()
+                    .any(|(x, y, p)| !rect.contains(egui::pos2(x as f32, y as f32)) && p[3] > 0)
+            );
+            app.active_text.as_mut().unwrap().content = "Container shadow".into();
+            app.text_dirty = true;
+            app.update_shape();
+            let with_text = app.composed_canvas().unwrap();
+            for (x, y, pixel) in empty.enumerate_pixels() {
+                if !rect.contains(egui::pos2(x as f32, y as f32)) {
+                    assert_eq!(pixel, with_text.get_pixel(x, y));
+                }
+            }
+            assert_eq!(app.inserted.as_ref().unwrap().rect, rect);
+            app.commit_insert(&ctx);
+            let file = tempfile::NamedTempFile::new().unwrap();
+            project::save(file.path(), app.pixels.as_ref().unwrap(), &app.objects).unwrap();
+            let (pixels, objects) = project::load(file.path(), &ctx).unwrap();
+            let restored = QuipIt {
+                pixels: Some(pixels),
+                objects,
+                ..Default::default()
+            };
+            assert_eq!(restored.composed_canvas().unwrap(), with_text);
+            assert!(restored.objects[0].object.image_style.unwrap().shadow);
+        }
+    }
+
+    #[test]
+    fn text_objects_move_from_edges_or_with_alt_and_keep_interior_text_selection() {
+        for kind in [text::Kind::Area, text::Kind::Speech, text::Kind::Thought] {
+            for mode in 0..3 {
+                let ctx = egui::Context::default();
+                let mut app = QuipIt {
+                    pixels: Some(RgbaImage::new(800, 600)),
+                    ..Default::default()
+                };
+                app.refresh(&ctx);
+                app.place_text(kind, &ctx);
+                app.active_text.as_mut().unwrap().content = "Move or select this text".into();
+                app.text_dirty = true;
+                text_ui_frame(&mut app, &ctx, vec![]);
+                text_ui_frame(&mut app, &ctx, vec![]);
+                let original = app.inserted.as_ref().unwrap().rect;
+                let (canvas, scale) = app.canvas_rect.unwrap();
+                let screen = app.inserted.as_ref().unwrap().screen_rect(canvas, scale);
+                let start = if mode == 0 {
+                    egui::pos2(screen.left() + 8.0, screen.center().y)
+                } else {
+                    screen.min + egui::vec2(screen.width() * 0.4, screen.height() * 0.25)
+                };
+                let modifiers = if mode == 1 {
+                    egui::Modifiers::ALT
+                } else {
+                    egui::Modifiers::NONE
+                };
+                for (offset, pressed) in [
+                    (Vec2::ZERO, Some(true)),
+                    (egui::vec2(-25.0, 20.0), None),
+                    (egui::vec2(-40.0, 30.0), None),
+                    (egui::vec2(-40.0, 30.0), Some(false)),
+                ] {
+                    let position = start + offset;
+                    let mut events = vec![egui::Event::PointerMoved(position)];
+                    if let Some(pressed) = pressed {
+                        events.push(egui::Event::PointerButton {
+                            pos: position,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers,
+                        });
+                    }
+                    let _ = ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(1150.0, 780.0),
+                            )),
+                            modifiers,
+                            events,
+                            ..Default::default()
+                        },
+                        |ctx| app.ui(ctx),
+                    );
+                }
+                let moved = app.inserted.as_ref().unwrap().rect;
+                if mode == 2 {
+                    assert_eq!(moved, original);
+                    assert!(app.active_text.as_ref().unwrap().anchor.is_some());
+                } else {
+                    assert!(
+                        (moved.min - original.min - egui::vec2(-40.0, 30.0) / scale).length() < 0.1
+                    );
+                    assert!(app.active_text.as_ref().unwrap().anchor.is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn canvas_text_typing_click_away_reediting_and_escape_restore_work_together() {
         let ctx = egui::Context::default();
         let mut app = QuipIt {
@@ -2206,9 +3085,9 @@ mod tests {
             ],
         );
         assert!(app.active_text.is_none());
-        assert_eq!(app.texts.len(), 1);
-        assert_eq!(app.texts[0].data.content, "Hello world");
-        app.edit_text(0, &ctx);
+        assert_eq!(app.objects.len(), 1);
+        assert_eq!(app.objects[0].data.as_ref().unwrap().content, "Hello world");
+        app.edit_object(0, &ctx);
         text_ui_frame(&mut app, &ctx, vec![egui::Event::Text(" changed".into())]);
         assert_eq!(
             app.active_text.as_ref().unwrap().content,
@@ -2226,7 +3105,7 @@ mod tests {
             }],
         );
         assert!(app.active_text.is_none());
-        assert_eq!(app.texts[0].data.content, "Hello world");
+        assert_eq!(app.objects[0].data.as_ref().unwrap().content, "Hello world");
     }
 
     #[test]
@@ -2246,19 +3125,22 @@ mod tests {
             .transform_image(30.0, false, false);
         app.update_shape();
         app.commit_insert(&ctx);
-        assert_eq!(app.texts.len(), 1);
+        assert_eq!(app.objects.len(), 1);
         assert_eq!(app.pixels.as_ref(), Some(&base));
         let exported = app.composed_canvas().unwrap();
         assert_ne!(exported, base);
-        app.edit_text(0, &ctx);
+        app.edit_object(0, &ctx);
         app.active_text.as_mut().unwrap().content = "Changed".into();
         app.text_dirty = true;
         app.commit_insert(&ctx);
-        assert_eq!(app.texts[0].data.content, "Changed");
+        assert_eq!(app.objects[0].data.as_ref().unwrap().content, "Changed");
         app.history(false, &ctx);
         assert!(app.active_text.is_some());
         app.discard_selection();
-        assert_eq!(app.texts[0].data.content, "Editable balloon");
+        assert_eq!(
+            app.objects[0].data.as_ref().unwrap().content,
+            "Editable balloon"
+        );
         assert_eq!(app.composed_canvas().unwrap(), exported);
     }
 
@@ -2273,15 +3155,15 @@ mod tests {
         app.active_text.as_mut().unwrap().content = "Crop".into();
         app.text_dirty = true;
         app.commit_insert(&ctx);
-        let original = app.texts[0].object.rect;
+        let original = app.objects[0].object.rect;
         app.selection = Some([10, 20, 200, 150]);
         app.crop_to_selection(&ctx);
         assert_eq!(
-            app.texts[0].object.rect,
+            app.objects[0].object.rect,
             original.translate(-egui::vec2(10.0, 20.0))
         );
         app.history(false, &ctx);
-        assert_eq!(app.texts[0].object.rect, original);
+        assert_eq!(app.objects[0].object.rect, original);
     }
 
     #[test]
@@ -2319,7 +3201,7 @@ mod tests {
                 modifiers: egui::Modifiers::NONE,
             }],
         );
-        assert!(app.active_text.is_none() && app.inserted.is_none() && app.texts.is_empty());
+        assert!(app.active_text.is_none() && app.inserted.is_none() && app.objects.is_empty());
     }
 
     #[test]
@@ -2344,14 +3226,371 @@ mod tests {
                 .as_nanos()
         ));
         app.path = Some(path.clone());
-        app.save(false);
+        app.export_image(false);
         let saved = image::open(&path).unwrap().to_rgba8();
         std::fs::remove_file(path).unwrap();
         assert_eq!(saved, expected);
-        assert_eq!(app.texts[0].data.content, "Saved text");
-        assert!(!app.dirty);
-        app.edit_text(0, &ctx);
+        assert_eq!(app.objects[0].data.as_ref().unwrap().content, "Saved text");
+        assert!(app.dirty);
+        app.edit_object(0, &ctx);
         assert_eq!(app.active_text.as_ref().unwrap().content, "Saved text");
+    }
+
+    fn mixed_object_document(ctx: &egui::Context) -> QuipIt {
+        let mut app = QuipIt {
+            pixels: Some(RgbaImage::from_pixel(120, 100, image::Rgba([255; 4]))),
+            ..Default::default()
+        };
+        app.refresh(ctx);
+        app.place_shape(shapes::ShapeKind::Square, ctx);
+        app.active_shape.as_mut().unwrap().1.fill = Color32::RED;
+        app.active_shape.as_mut().unwrap().1.border_width = 0.0;
+        app.inserted.as_mut().unwrap().rect =
+            egui::Rect::from_min_size(egui::pos2(10.0, 10.0), Vec2::splat(60.0));
+        app.commit_insert(ctx);
+        let mut image = InsertedImage::new(
+            RgbaImage::from_pixel(40, 40, image::Rgba([0, 0, 255, 255])),
+            egui::vec2(120.0, 100.0),
+            ctx,
+        );
+        image.image_style = Some(insert::ImageStyle::default());
+        image.rect = egui::Rect::from_min_size(egui::pos2(20.0, 20.0), Vec2::splat(40.0));
+        app.inserted = Some(image);
+        app.commit_insert(ctx);
+        app.place_text(text::Kind::Speech, ctx);
+        app.active_text.as_mut().unwrap().content = "Editable".into();
+        app.active_text.as_mut().unwrap().font = text::mono();
+        app.active_text.as_mut().unwrap().font_name = "Embedded custom font".into();
+        app.active_text.as_mut().unwrap().shadow = true;
+        app.text_dirty = true;
+        app.commit_insert(ctx);
+        app.objects[0].name = "Red square".into();
+        app.objects[2].visible = false;
+        app
+    }
+
+    #[test]
+    fn canvas_selects_frontmost_visible_object() {
+        let ctx = egui::Context::default();
+        let mut app = mixed_object_document(&ctx);
+        text_ui_frame(&mut app, &ctx, vec![]);
+        text_ui_frame(&mut app, &ctx, vec![]);
+        let (canvas, scale) = app.canvas_rect.unwrap();
+        let pointer = canvas.min + egui::vec2(30.0, 30.0) * scale;
+        text_ui_frame(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(pointer),
+                egui::Event::PointerButton {
+                    pos: pointer,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        assert_eq!(app.object_before.as_ref().unwrap().0, 1);
+        assert!(app.active_shape.is_none() && app.active_text.is_none());
+        app.commit_insert(&ctx);
+        app.objects[1].visible = false;
+        app.upload_canvas(&ctx);
+        text_ui_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerButton {
+                pos: pointer,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        text_ui_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerButton {
+                pos: pointer,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert_eq!(app.active_shape.unwrap().0, shapes::ShapeKind::Square);
+    }
+
+    #[test]
+    fn mixed_objects_follow_crop_resize_and_undo() {
+        let ctx = egui::Context::default();
+        let mut app = mixed_object_document(&ctx);
+        let original = app.composed_canvas().unwrap();
+        let original_rect = app.objects[1].object.rect;
+        app.selection = Some([5, 5, 100, 80]);
+        app.crop_to_selection(&ctx);
+        assert_eq!(
+            app.objects[1].object.rect,
+            original_rect.translate(egui::vec2(-5.0, -5.0))
+        );
+        app.width = 200;
+        app.height = 160;
+        app.resize_canvas(&ctx);
+        assert_eq!(app.objects[1].object.pixels.dimensions(), (40, 40));
+        assert_eq!(app.objects[1].object.rect.width(), 80.0);
+        assert!(app.objects[0].shape.is_some());
+        assert!(app.objects[2].data.is_some());
+        app.history(false, &ctx);
+        app.history(false, &ctx);
+        assert_eq!(app.composed_canvas().unwrap(), original);
+    }
+
+    #[test]
+    fn opening_background_color_does_not_flatten_an_imported_image() {
+        let mut pixels = RgbaImage::from_pixel(10, 10, image::Rgba([255; 4]));
+        pixels.put_pixel(5, 5, image::Rgba([0, 0, 255, 255]));
+        let mut app = QuipIt {
+            pixels: Some(pixels.clone()),
+            ..Default::default()
+        };
+        app.begin_background_color();
+        app.preview_color(app.palette.edit.unwrap());
+        app.finish_color(true);
+        assert_eq!(app.pixels.as_ref(), Some(&pixels));
+        assert!(!app.dirty);
+        assert!(app.undo.is_empty());
+    }
+
+    #[test]
+    fn background_selection_has_no_movable_object_and_color_changes_are_undoable() {
+        let ctx = egui::Context::default();
+        let mut app = mixed_object_document(&ctx);
+        app.edit_object(0, &ctx);
+        app.select_background(&ctx);
+        assert!(app.background_selected);
+        assert!(app.inserted.is_none() && app.active_text.is_none() && app.active_shape.is_none());
+        let objects = app
+            .objects
+            .iter()
+            .map(|o| o.object.rect)
+            .collect::<Vec<_>>();
+        let original = app.pixels.clone().unwrap();
+        app.dirty = false;
+        app.begin_background_color();
+        app.palette.edit.as_mut().unwrap().color = Color32::GREEN;
+        app.palette.edit.as_mut().unwrap().transparency = 50.0;
+        app.preview_color(app.palette.edit.unwrap());
+        assert_ne!(app.pixels.as_ref().unwrap(), &original);
+        app.finish_color(false);
+        assert_eq!(app.pixels.as_ref().unwrap(), &original);
+        assert!(!app.dirty);
+        app.begin_background_color();
+        app.palette.edit.as_mut().unwrap().color = Color32::BLUE;
+        app.palette.edit.as_mut().unwrap().transparency = 50.0;
+        app.finish_color(true);
+        assert!(app.dirty);
+        assert_eq!(
+            app.pixels.as_ref().unwrap().get_pixel(0, 0).0,
+            [0, 0, 255, 128]
+        );
+        assert_eq!(
+            app.objects
+                .iter()
+                .map(|o| o.object.rect)
+                .collect::<Vec<_>>(),
+            objects
+        );
+        app.history(false, &ctx);
+        assert_eq!(app.pixels.as_ref().unwrap(), &original);
+        app.history(true, &ctx);
+        assert_eq!(
+            app.pixels.as_ref().unwrap().get_pixel(0, 0).0,
+            [0, 0, 255, 128]
+        );
+        app.select_background(&ctx);
+        text_ui_frame(&mut app, &ctx, vec![]);
+        assert!(app.inserted.is_none());
+        app.place_text(text::Kind::Area, &ctx);
+        assert!(!app.background_selected);
+    }
+
+    #[test]
+    fn list_actions_reorder_toggle_duplicate_and_delete_without_revealing_hidden_objects() {
+        let ctx = egui::Context::default();
+        let mut app = mixed_object_document(&ctx);
+        let hidden_name = app.objects[2].name.clone();
+        app.edit_object(0, &ctx);
+        // Drag the hidden top object below the selected bottom object.
+        app.object_list_action(2, "reorder", 0, &ctx);
+        assert_eq!(app.objects[0].name, hidden_name);
+        assert!(!app.objects[0].visible);
+        assert_eq!(app.objects[1].name, "Red square");
+        app.history(false, &ctx);
+        assert_eq!(app.objects[0].name, "Red square");
+        assert_eq!(app.objects[2].name, hidden_name);
+        app.object_list_action(2, "duplicate", 2, &ctx);
+        assert_eq!(app.objects[3].name, format!("{hidden_name} copy"));
+        assert!(!app.objects[3].visible);
+        app.object_list_action(3, "visibility", 3, &ctx);
+        assert!(app.objects[3].visible);
+        app.object_list_action(3, "back", 0, &ctx);
+        assert_eq!(app.objects[0].name, format!("{hidden_name} copy"));
+        app.object_list_action(0, "forward", 0, &ctx);
+        assert_eq!(app.objects[1].name, format!("{hidden_name} copy"));
+        app.object_list_action(1, "backward", 0, &ctx);
+        app.object_list_action(0, "front", 0, &ctx);
+        assert_eq!(app.objects[3].name, format!("{hidden_name} copy"));
+        app.object_list_action(3, "delete", 3, &ctx);
+        assert_eq!(app.objects.len(), 3);
+        app.history(false, &ctx);
+        assert_eq!(app.objects.len(), 4);
+        assert!(app.objects[3].visible);
+    }
+
+    #[test]
+    fn mixed_objects_keep_depth_while_editing_and_support_reordering() {
+        let ctx = egui::Context::default();
+        let mut app = mixed_object_document(&ctx);
+        let expected = app.composed_canvas().unwrap();
+        assert_eq!(expected.get_pixel(30, 30).0, [0, 0, 255, 255]);
+        app.edit_object(0, &ctx);
+        assert!(app.active_shape.is_some());
+        assert_eq!(app.composed_canvas().unwrap(), expected);
+        app.arrange_object("front", &ctx);
+        assert_eq!(
+            app.composed_canvas().unwrap().get_pixel(30, 30).0,
+            [255, 0, 0, 255]
+        );
+        app.history(false, &ctx);
+        assert_eq!(app.composed_canvas().unwrap(), expected);
+        app.edit_object(1, &ctx);
+        assert!(app.inserted.as_ref().unwrap().image_style.is_some());
+        app.inserted
+            .as_mut()
+            .unwrap()
+            .image_style
+            .as_mut()
+            .unwrap()
+            .image_transparency = 50.0;
+        app.discard_selection();
+        app.upload_canvas(&ctx);
+        assert_eq!(app.composed_canvas().unwrap(), expected);
+    }
+
+    #[test]
+    fn object_duplication_deletion_and_undo_preserve_sources() {
+        let ctx = egui::Context::default();
+        let mut app = mixed_object_document(&ctx);
+        app.edit_object(0, &ctx);
+        app.arrange_object("duplicate", &ctx);
+        assert_eq!(app.objects.len(), 3); // One of four objects is being edited.
+        assert_eq!(
+            app.object_before.as_ref().unwrap().1.name,
+            "Red square copy"
+        );
+        app.active_shape.as_mut().unwrap().1.fill = Color32::GREEN;
+        app.commit_insert(&ctx);
+        assert_eq!(app.objects[0].shape.unwrap().1.fill, Color32::RED);
+        assert_eq!(app.objects[1].shape.unwrap().1.fill, Color32::GREEN);
+        app.edit_object(1, &ctx);
+        app.delete_object(&ctx);
+        assert_eq!(app.objects.len(), 3);
+        assert!(app.inserted.is_none());
+        app.history(false, &ctx);
+        assert_eq!(app.active_shape.unwrap().1.fill, Color32::GREEN);
+        assert!(app.inserted.is_some());
+    }
+
+    #[test]
+    fn project_round_trip_preserves_mixed_objects_and_active_edits() {
+        let ctx = egui::Context::default();
+        let mut app = mixed_object_document(&ctx);
+        app.edit_object(1, &ctx);
+        app.inserted
+            .as_mut()
+            .unwrap()
+            .transform_image(30.0, true, false);
+        let style = app.inserted.as_mut().unwrap().image_style.as_mut().unwrap();
+        style.shadow = true;
+        style.shadow_color = Color32::from_rgba_unmultiplied(12, 34, 56, 150);
+        style.shadow_offset = egui::vec2(-5.0, 7.0);
+        style.shadow_blur = 3.0;
+        app.shape_rotation = 30.0;
+        app.update_shape();
+        let expected = app.composed_canvas().unwrap();
+        let path = std::env::temp_dir().join(format!("quipit-project-{}.qip", std::process::id()));
+        app.project_path = Some(path.clone());
+        app.save(false);
+        assert!(!app.dirty, "{}", app.status);
+        let (pixels, objects) = project::load(&path, &ctx).unwrap();
+        std::fs::remove_file(path).unwrap();
+        let mut restored = QuipIt {
+            pixels: Some(pixels),
+            objects,
+            ..Default::default()
+        };
+        let shadow = restored.objects[1].object.image_style.unwrap();
+        assert!(shadow.shadow);
+        assert_eq!(shadow.shadow_offset, egui::vec2(-5.0, 7.0));
+        assert_eq!(shadow.shadow_blur, 3.0);
+        assert_eq!(restored.objects.len(), 3);
+        assert_eq!(restored.objects[0].name, "Red square");
+        assert_eq!(
+            restored.objects[0].shape.unwrap().0,
+            shapes::ShapeKind::Square
+        );
+        assert!(!restored.objects[2].visible);
+        assert_eq!(
+            restored.objects[2].data.as_ref().unwrap().font_name,
+            "Embedded custom font"
+        );
+        assert!(restored.objects[2].data.as_ref().unwrap().shadow);
+        assert_eq!(
+            restored.objects[2].data.as_ref().unwrap().content,
+            "Editable"
+        );
+        assert_eq!(restored.composed_canvas().unwrap(), expected);
+        restored.edit_object(2, &ctx);
+        assert_eq!(restored.active_text.as_ref().unwrap().content, "Editable");
+        restored.active_text.as_mut().unwrap().content = "Reopened".into();
+        restored.text_dirty = true;
+        restored.commit_insert(&ctx);
+        assert_eq!(
+            restored.objects[2].data.as_ref().unwrap().content,
+            "Reopened"
+        );
+    }
+
+    #[test]
+    fn approved_document_actions_finish_text_edits() {
+        for closing in [false, true] {
+            for kind in [text::Kind::Area, text::Kind::Speech, text::Kind::Thought] {
+                let ctx = egui::Context::default();
+                let mut app = QuipIt {
+                    pixels: Some(RgbaImage::new(500, 400)),
+                    ..Default::default()
+                };
+                app.refresh(&ctx);
+                app.place_text(kind, &ctx);
+                app.active_text.as_mut().unwrap().content = "Pending edit".into();
+                app.text_dirty = true;
+                app.pending_new = !closing;
+                app.confirm_close = closing;
+                app.continue_document_action(&ctx);
+                assert!(app.active_text.is_none());
+                assert!(app.inserted.is_none());
+                assert!(!app.pending_new && !app.confirm_close);
+                assert_eq!(
+                    app.objects[0].data.as_ref().unwrap().content,
+                    "Pending edit"
+                );
+                assert_eq!(app.show_new, !closing);
+                assert_eq!(app.close_approved, closing);
+                if closing {
+                    assert!(!app.dirty);
+                }
+                text_ui_frame(&mut app, &ctx, vec![]);
+                assert!(app.active_text.is_none());
+                assert!(!app.confirm_close);
+            }
+        }
     }
 
     #[test]

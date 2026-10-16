@@ -1,7 +1,7 @@
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
 use std::f32::consts::{PI, TAU};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ShapeKind {
     Line,
     Curve3,
@@ -399,7 +399,7 @@ fn outlines(kind: ShapeKind, rect: Rect) -> Vec<(Vec<Pos2>, bool)> {
     paths
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Style {
     pub border_width: f32,
     pub border: Color32,
@@ -421,7 +421,7 @@ impl Default for Style {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Transform {
     matrix: [f32; 4],
     source_aspect: Option<f32>,

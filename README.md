@@ -32,7 +32,8 @@ A graphical desktop session is required to launch the app. Docker is not require
   stay fixed. Move / Resize switches
   back to the whole-object selector. Controls are initially fitted into the canvas.
   Curve edits support colors, rotation, reflection, export and undo restoration.
-  A fixed-width right-hand properties panel keeps the canvas layout stable
+  A resizable right-hand sidebar stacks the Objects list above the properties panel,
+  with a draggable divider and independent scrolling. It keeps the canvas layout stable
   when selecting, applying or canceling a shape. Shape properties adjust border thickness, border color,
   fill color and transparency. Fill is disabled for open lines/curves.
   A rotation slider, 90-degree turn buttons and horizontal/vertical reflection
@@ -48,33 +49,61 @@ A graphical desktop session is required to launch the app. Docker is not require
   channel values, plus its own OK/Cancel controls. Enter accepts the innermost
   dialog; Escape cancels it. Edits preview live; OK keeps them, while Cancel, Escape or closing the dialog
   restores the previous settings without discarding the selected object.
-  Apply or Enter merges the shape as an undoable edit; Cancel or Escape removes it.
-  Clicking elsewhere on the canvas also merges it. Shape pixels use the same
+  Apply, Enter, or clicking away accepts the shape as an editable object.
+  Cancel or Escape removes a new shape or restores an existing one. Shape pixels use the same
   renderer for preview and export. Speech/thought balloon choices open text objects.
 - Text toolbar button: Text rectangle, Speech balloon, Thought bubble.
+  New text objects reuse the most recently used font, size, bold/italic, text color
+  and alignment during the session. New text rectangles start with a 3px black
+  border and white background.
   Type directly on the canvas; words wrap within padded container boundaries.
   Ctrl+Enter inserts a forced line break. Click elsewhere or press Enter to accept.
   Escape removes a new text object or restores the previous version when reediting.
   Accepted text stays selectable and editable during the session; click it to edit again.
-  Resize handles reflow text. Shift preserves proportions; right-click a handle toggles
+  Drag the outer 12-pixel edge to move a text object, or Alt-drag anywhere inside it.
+  Ordinary interior drags select text. Resize handles reflow text. Shift preserves proportions; right-click a handle toggles
   rotation. Rotation and reflection affect the text and container together.
   Properties include bundled Sans/Monospace fonts, loading a TTF/OTF font, font size,
   synthetic bold/italic, alignment, text/border/background colors, border thickness,
-  and drop-shadow color, transparency, offsets and blur. Colors use the shared dialog.
+  and text-shadow color, transparency, offsets and blur. A separate Border shadow
+  option shadows the container outline of text rectangles, speech balloons and thought
+  bubbles, extending outside their bounds. Both shadows have independent controls
+  and are preserved in projects and exports. Colors use the shared dialog.
   Overflow clips to the text area and shows a warning so the box/font can be adjusted.
   Ctrl+A, clipboard copy/cut/paste, arrow keys, Shift-selection and local Ctrl+Z work
   while typing. Text objects participate in document undo, crop, resize and image export.
-  Text layers are drawn above the raster image. Saving PNG/JPEG/WebP flattens them;
-  reopening an exported image does not restore editable text. Project-file saving is pending.
-- File menu: New, Open, Insert, Save, Save As, and Exit.
+  Text, shapes and imported images share one front-to-back object stack.
+  Save a QuipIt project to preserve them, or export PNG/JPEG/WebP to flatten them.
+- Objects panel (upper right, above Properties): select an object from the list or click it on the canvas to edit it.
+  The list runs from front to back. Rename the selected object, move it forward/backward
+  or to the front/back, duplicate it, delete it, or toggle visibility using the eye button.
+  Drag list items up or down to reorder them; a line marks the insertion position.
+  Right-click an object for Duplicate, Delete, Move up/down, or Move to top/bottom.
+  Canvas is a fixed item at the bottom of the list. Select it (or click empty
+  canvas space) to fill the base canvas with a color and transparency using Properties.
+  This replaces the base raster, preserves all added objects, and supports undo/redo;
+  canceling the color dialog restores the original background image.
+  Clicking away accepts changes without merging the object into the background.
+  Escape or Cancel restores the previous version of an existing object.
+  Hidden objects become visible when selected for editing. Order, visibility, deletion,
+  duplication and object edits participate in undo/redo.
+- File menu: New, Open, Insert, Save project, Save project as, Export image, and Exit.
+  Ctrl+S saves an editable `.qip` project containing the background, ordered objects,
+  names, visibility, geometry, text styling, embedded fonts and original imported pixels.
+  Open accepts `.qip` projects, legacy `.quipit` projects, and raster images. Export image writes a flattened
+  PNG/JPEG/WebP and keeps the project’s unsaved status. Reopening an exported raster
+  image cannot restore its objects. Version 1 projects are limited to 256 MB on disk.
 - New is limited to 5000 × 5000 pixels. It provides width/height sliders with exact pixel entry and optional locked
   proportions, plus a basic background color
   or transparency. White is the initial default. Transparent areas display a checkerboard.
 - Insert imports an image as a movable object with eight resize handles. Click
-  elsewhere or press Enter to merge it; Escape cancels. Merging is undoable.
+  elsewhere or press Enter to accept it; Escape cancels. Accepted images remain editable.
   Image properties include border thickness/color, independent border transparency
   and image transparency, plus the color palette and eyedropper. The border is
   a frame inside the selector; image content fits within it without overlapping.
+  Image objects also support a drop shadow with color/transparency, X/Y offsets,
+  and blur. Shadows extend outside the selector, follow the image silhouette, and
+  appear in previews, exports and saved projects.
   Original imported pixels are retained while editing and resizing. Inserted images
   support a rotation slider, quarter-turn/flip icons and right-click handle toggling
   between resize and rotate. Image transparency opens the shared live-preview dialog.
@@ -91,22 +120,21 @@ A graphical desktop session is required to launch the app. Docker is not require
   Escape cancels cropping without changing the image.
 - Hold Shift while dragging any crop or inserted-image resize handle to preserve
   its aspect ratio at the start of the drag (crop dimensions round to whole pixels).
-- Ctrl+Z undoes the last edit. Ctrl+S saves, opening Save As for a new image.
+- Ctrl+Z undoes the last edit. Ctrl+S saves the project, asking for a filename when needed.
   Command+Z and Command+S also work on macOS.
 - Undo and redo the most recent ten edits. Deleting a selected shape with Delete,
   Cancel or Escape can be undone: its selector, colors, transparency, size and
   transformations are restored for continued editing. Redo removes it again.
-- Save or Save As, including PNG, JPEG and WebP. The filename extension determines
+- Export image supports PNG, JPEG and WebP. The filename extension determines
   the output format; unsupported output formats report an error.
 - Confirm unsaved changes before opening another file or closing.
 
-JPEG transparency is composited onto white. Saving exports raster pixels and does
-not preserve source metadata. Large images and history are held in memory.
+JPEG transparency is composited onto white. Image export does not preserve source metadata. Large images and history are held in memory.
 
 ## Next milestones
 
 1. Zoom/pan, keyboard shortcuts and image orientation handling.
-2. Editable project files preserving text objects alongside flattened image exports.
+2. Project thumbnails and additional object organization tools.
 3. More text editing refinements, system font discovery and richer typography.
 4. Native packaging and hands-on validation on Windows, Linux and macOS.
 
