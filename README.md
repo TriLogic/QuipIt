@@ -11,7 +11,7 @@ and Intel Mac downloads, then creates a draft release for review. See
 
 ## Run
 
-Install a current stable Rust toolchain, then run:
+Install Rust (rustup will use the pinned toolchain), then run:
 
 ```sh
 cargo run
