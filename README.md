@@ -22,6 +22,51 @@ Linux requires desktop development libraries (on Ubuntu/Debian:
 `sudo apt install build-essential pkg-config libx11-dev libxi-dev libxrandr-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev`).
 A graphical desktop session is required to launch the app. Docker is not required.
 
+## Shared command API
+
+The status text sits flush along the bottom with no inset or separator line.
+The AI toolbar button reveals a bounded command area above it, anchored across
+the canvas width beside the Objects/Properties sidebar, above the full-width
+status bar, with a slightly darker gray interior. Drag its upper edge to adjust
+the terminal height. Hiding AI returns to the compact status footer.
+The AI header has a provider setup/switch button beside its close button.
+Choose OpenAI, Gemini, or Grok. Each option has a Configure button for a masked
+API key, model picker, optional Remember key, and Test connection. Enter your
+key and click Load models to fetch the provider’s available model IDs, then
+choose one from the dropdown. Refresh models reloads the list; changing the
+key clears it. You can also enter a model ID manually. Save stores the
+provider's configuration; Use provider saves the active selection. Cancel discards
+unsaved changes. Provider/model preferences persist in `ai.json` in the OS
+application configuration directory (Linux: `~/.config/QuipIt`). API keys are never
+written there or into projects. Remembered keys use Windows Credential Manager,
+macOS Keychain, or Linux Secret Service; otherwise keys live only for the session.
+Turn off Remember key and save to remove a previously stored key. On Linux,
+remembering keys requires an unlocked Secret Service such as GNOME Keyring or
+KWallet. Credential-store failures are shown in the configuration dialog.
+Test connection checks key/model access in the background with a 20-second
+timeout; it does not generate content or test generation quota.
+
+The AI panel is a scrolling chat with an `ai>` composer. Enter sends; Shift+Enter
+adds a newline. Replies can execute validated editing commands against the current
+canvas. Each edit plan is atomic and undoable; failed plans leave the document
+unchanged. Stop discards the pending reply (the provider request may finish in the
+background). Changing the document while AI is thinking rejects that reply's edits.
+Chat history and document properties/text are sent to the selected provider; image
+pixels and local files are not sent. Chat history is held only for this session;
+the latest 24 messages provide conversation context. File operations use the
+normal toolbar. OpenAI and Grok use Responses; Gemini uses generateContent.
+Choose a model that supports text generation. Provider errors appear in chat.
+Objects and Properties use smaller titles on lighter gray header bars.
+The canvas, Objects, Properties, and AI terminal use rounded panels with matching
+borders and spacing.
+
+The desktop editor is also a Rust library with serializable editing commands for
+document operations, all object types and properties, transforms, layering,
+crop/resize, save/export, and undo/redo. AI or scripting adapters can use the same
+validated operations as the UI. Objects have persistent IDs; command batches
+roll back on failure and undo as one action. See [the command guide](docs/commands.md)
+for the API, JSON examples, and a runnable workflow that needs no desktop window.
+
 ## First milestone
 
 - Pix-inspired symbolic toolbar, left to right: New, Open, Insert, Save; Undo,

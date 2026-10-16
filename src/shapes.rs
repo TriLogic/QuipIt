@@ -675,7 +675,7 @@ pub fn curve_editor(
     }
 }
 
-fn move_curve_point(
+pub(crate) fn move_curve_point(
     kind: ShapeKind,
     style: &mut Style,
     object: &mut Rect,
