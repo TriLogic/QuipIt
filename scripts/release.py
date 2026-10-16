@@ -47,6 +47,7 @@ def package(target, binary=None, output=None):
     stage.mkdir()  # Refuse to overwrite an earlier staging directory.
     shutil.copy2(ROOT / "README.md", stage)
     shutil.copy2(ROOT / "CHANGELOG.md", stage)
+    shutil.copy2(ROOT / "RELEASE.md", stage)
     shutil.copytree(ROOT / "licenses", stage / "licenses")
     if target.startswith("macos"):
         contents = stage / "QuipIt.app" / "Contents"
@@ -101,7 +102,8 @@ def publish():
     notes.write_text(
         f"# QuipIt {tag}\n\nDraft for testing before publication.\n\n"
         "## Downloads\n\n"
-        "- Windows x64: extract the ZIP and run quipit.exe.\n"
+        "- Windows x64: extract the ZIP and run quipit.exe. Requires the Microsoft Visual C++ v14 x64 runtime. "
+        "If VCRUNTIME140.dll is missing, install it from https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist.\n"
         "- Mac: choose Apple Silicon or Intel, extract the ZIP, and move QuipIt.app to Applications.\n"
         "- Linux x64: extract the tar.gz and run ./quipit in a graphical desktop session. "
         "Built on Ubuntu 22.04; runtime library names are included in runtime-libraries.txt.\n\n"
