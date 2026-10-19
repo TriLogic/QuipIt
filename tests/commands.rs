@@ -103,7 +103,7 @@ fn commands_are_strict_json_and_invalid_edits_leave_the_document_unchanged() {
                     &ctx,
                     Command::UpdateObject {
                         target: Target::Selected,
-                        patch
+                        patch: patch.into()
                     }
                 )
                 .is_err()
@@ -152,7 +152,8 @@ fn every_shape_and_text_kind_can_be_created_styled_and_transformed_without_ui() 
                             blur: Some(3.0),
                         }),
                         ..Default::default()
-                    },
+                    }
+                    .into(),
                 },
             )
             .unwrap();
@@ -198,7 +199,8 @@ fn every_shape_and_text_kind_can_be_created_styled_and_transformed_without_ui() 
                             ..Default::default()
                         }),
                         ..Default::default()
-                    },
+                    }
+                    .into(),
                 },
             )
             .unwrap();
@@ -296,7 +298,8 @@ fn json_workflow_saves_stable_ids_and_exports_the_same_preview() {
                         ..Default::default()
                     }),
                     ..Default::default()
-                },
+                }
+                .into(),
             },
         )
         .unwrap();
@@ -344,7 +347,8 @@ fn batches_are_atomic_and_undo_and_redo_as_one_action() {
                                 ..Default::default()
                             }),
                             ..Default::default()
-                        },
+                        }
+                        .into(),
                     },
                     Command::Rename {
                         target: Target::Selected,
@@ -359,7 +363,8 @@ fn batches_are_atomic_and_undo_and_redo_as_one_action() {
                                 ..Default::default()
                             }),
                             ..Default::default()
-                        },
+                        }
+                        .into(),
                     },
                 ],
             },
@@ -504,7 +509,8 @@ fn image_font_curve_crop_and_resize_commands_work_without_dialogs() {
                         transparency: Some(30.0),
                     }),
                     ..Default::default()
-                },
+                }
+                .into(),
             },
         )
         .unwrap();
@@ -523,7 +529,8 @@ fn image_font_curve_crop_and_resize_commands_work_without_dialogs() {
                         ..Default::default()
                     }),
                     ..Default::default()
-                },
+                }
+                .into(),
             },
         )
         .unwrap();
@@ -749,6 +756,7 @@ fn failed_batches_restore_an_active_text_edit_and_its_selection() {
                                 }),
                                 ..Default::default()
                             }
+                            .into()
                         },
                     ]
                 }

@@ -452,7 +452,7 @@ fn command_contract() -> &'static str {
 }
 
 fn command_examples() -> Value {
-    use crate::commands::{ObjectPatch, Target};
+    use crate::commands::Target;
     let selected = Target::Selected;
     let commands = vec![
         Command::NewDocument {
@@ -476,7 +476,7 @@ fn command_examples() -> Value {
         Command::SelectBackground,
         Command::UpdateObject {
             target: selected,
-            patch: ObjectPatch::default(),
+            patch: Box::default(),
         },
         Command::EditText {
             target: selected,

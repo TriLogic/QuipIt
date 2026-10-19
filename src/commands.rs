@@ -77,7 +77,7 @@ pub enum Command {
     SelectBackground,
     UpdateObject {
         target: Target,
-        patch: ObjectPatch,
+        patch: Box<ObjectPatch>,
     },
     EditText {
         target: Target,
