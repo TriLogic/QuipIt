@@ -3,7 +3,7 @@
 </p>
 
 <h1 align="center">QuipIt</h1>
-<p align="center"><strong>Version 0.3.0</strong><br>Images, captions, and a little conversation.</p>
+<p align="center"><strong>Version 0.3.1</strong><br>Images, captions, and a little conversation.</p>
 
 QuipIt is a desktop image editor for **Windows, Linux, and macOS**. Add captions,
 speech balloons, shapes, and images to a single canvas, then arrange and style

@@ -13,7 +13,7 @@ You can do this in a browser; no terminal commands or Rust installation are need
 5. When all jobs turn green, open [Releases](https://github.com/TriLogic/QuipIt/releases).
    Sign in with repository write access to see the new **draft**.
 
-The version comes from `Cargo.toml`. The current version is **v0.3.0**. Nothing is
+The version comes from `Cargo.toml`. The current version is **v0.3.1**. Nothing is
 published automatically. A failure in any platform's tests or packaging prevents
 creation of the draft; the successful build downloads remain available in the run's
 **Artifacts** section for 14 days.

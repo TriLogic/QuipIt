@@ -1,5 +1,10 @@
 # Change notes
 
+## 0.3.1 — 2026-10-19
+
+- Redraw the lightning bolt with a broad top, clear zigzag, and pointed lower
+  tip, shared by the shape picker and the canvas renderer.
+
 ## 0.3.0 — 2026-10-19
 
 - Support mouse-driven AI chat detaching, window movement, redocking, and closing,
