@@ -123,6 +123,7 @@ pub enum Icon {
     Shapes,
     Text,
     Ai,
+    About,
     RotateLeft,
     RotateRight,
     FlipVertical,
@@ -152,6 +153,23 @@ pub fn button(ui: &mut Ui, icon: Icon, label: &str, enabled: bool, selected: boo
             );
         };
         match icon {
+            Icon::About => {
+                painter.add(egui::Shape::closed_line(
+                    vec![
+                        point(1.0, 2.0),
+                        point(17.0, 2.0),
+                        point(17.0, 14.0),
+                        point(8.0, 14.0),
+                        point(3.0, 18.0),
+                        point(4.0, 14.0),
+                        point(1.0, 14.0),
+                    ],
+                    stroke,
+                ));
+                for x in [5.0, 9.0, 13.0] {
+                    painter.circle_filled(point(x, 8.0), 1.0, stroke.color);
+                }
+            }
             Icon::Ai => {
                 painter.text(
                     response.rect.center(),

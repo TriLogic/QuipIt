@@ -1134,6 +1134,18 @@ impl QuipIt {
         self.require_document()?;
         self.update_shape();
         let pixels = self.composed_canvas().unwrap();
+        let format = image::ImageFormat::from_path(&path).map_err(io_error)?;
+        if format == image::ImageFormat::Qoi {
+            return Err(error(
+                ErrorCode::Unsupported,
+                "Saving QOI images is not supported. Choose another format in Save As.",
+            ));
+        }
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(std::path::Path::new("."));
+        let temporary = tempfile::NamedTempFile::new_in(parent).map_err(io_error)?;
         let jpeg = path
             .extension()
             .and_then(|extension| extension.to_str())
@@ -1148,11 +1160,15 @@ impl QuipIt {
                         / 255) as u8
                 }))
             })
-            .save(&path)
+            .save_with_format(temporary.path(), format)
             .map_err(io_error)?;
         } else {
-            pixels.save(&path).map_err(io_error)?;
+            pixels
+                .save_with_format(temporary.path(), format)
+                .map_err(io_error)?;
         }
+        temporary.as_file().sync_all().map_err(io_error)?;
+        temporary.persist(&path).map_err(io_error)?;
         self.status = format!("Saved {}", path.display());
         self.path = Some(path);
         Ok(())

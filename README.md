@@ -130,7 +130,7 @@ for the API, JSON examples, and a runnable workflow that needs no desktop window
   Ctrl+A, clipboard copy/cut/paste, arrow keys, Shift-selection and local Ctrl+Z work
   while typing. Text objects participate in document undo, crop, resize and image export.
   Text, shapes and imported images share one front-to-back object stack.
-  Save a QuipIt project to preserve them, or export PNG/JPEG/WebP to flatten them.
+  Save a QuipIt project to preserve them, or save as an image to flatten them.
 - Objects panel (upper right, above Properties): select an object from the list or click it on the canvas to edit it.
   The list runs from front to back. Rename the selected object, move it forward/backward
   or to the front/back, duplicate it, delete it, or toggle visibility using the eye button.
@@ -144,12 +144,23 @@ for the API, JSON examples, and a runnable workflow that needs no desktop window
   Escape or Cancel restores the previous version of an existing object.
   Hidden objects become visible when selected for editing. Order, visibility, deletion,
   duplication and object edits participate in undo/redo.
-- File menu: New, Open, Insert, Save project, Save project as, Export image, and Exit.
-  Ctrl+S saves an editable `.qip` project containing the background, ordered objects,
-  names, visibility, geometry, text styling, embedded fonts and original imported pixels.
-  Open accepts `.qip` projects, legacy `.quipit` projects, and raster images. Export image writes a flattened
-  PNG/JPEG/WebP and keeps the project’s unsaved status. Reopening an exported raster
-  image cannot restore its objects. Version 1 projects are limited to 256 MB on disk.
+- Click the QuipIt icon at the right end of the toolbar to view the application
+  name, version, and brief description. Dismiss the About dialog with OK.
+- File menu: New, Open, Insert, Save, Save As, and Exit.
+  Save (Ctrl+S) writes back to the current file, including PNG, JPEG, WebP and other
+  supported raster formats. New documents default to an editable `.qip` project.
+  Save As opens a dialog with filename, folder, and a format dropdown, retaining
+  the current filename with the chosen extension. Subsequent saves use the new file.
+  QOI saving is not supported.
+  Projects preserve objects, text styling, embedded fonts and imported pixels.
+  Image saves flatten the canvas on disk while keeping objects editable in the
+  current session. Reopening an image cannot restore its objects.
+  Open accepts `.qip`, legacy `.quipit`, and raster images.
+  Drop a file onto the canvas to open it. With a document loaded, dropped images
+  offer Open or Import; Import adds an editable image object to the current canvas.
+  Dropped projects open directly. Replacing a document offers Save, Discard changes,
+  or Cancel when edits are pending. Drop one file at a time.
+  Version 1 projects are limited to 256 MB on disk.
 - New is limited to 5000 × 5000 pixels. It provides width/height sliders with exact pixel entry and optional locked
   proportions, plus a basic background color
   or transparency. White is the initial default. Transparent areas display a checkerboard.
@@ -177,16 +188,16 @@ for the API, JSON examples, and a runnable workflow that needs no desktop window
   Escape cancels cropping without changing the image.
 - Hold Shift while dragging any crop or inserted-image resize handle to preserve
   its aspect ratio at the start of the drag (crop dimensions round to whole pixels).
-- Ctrl+Z undoes the last edit. Ctrl+S saves the project, asking for a filename when needed.
+- Ctrl+Z undoes the last edit. Ctrl+S saves the current file, asking for a filename when needed.
   Command+Z and Command+S also work on macOS.
 - Undo and redo the most recent ten edits. Deleting a selected shape with Delete,
   Cancel or Escape can be undone: its selector, colors, transparency, size and
   transformations are restored for continued editing. Redo removes it again.
-- Export image supports PNG, JPEG and WebP. The filename extension determines
-  the output format; unsupported output formats report an error.
+- Save As supports projects and images. The format dropdown determines the output
+  format and filename extension; QOI is not available for saving.
 - Confirm unsaved changes before opening another file or closing.
 
-JPEG transparency is composited onto white. Image export does not preserve source metadata. Large images and history are held in memory.
+JPEG transparency is composited onto white. Image saving does not preserve source metadata. Large images and history are held in memory.
 
 ## Next milestones
 

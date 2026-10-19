@@ -53,6 +53,7 @@ def package(target, binary=None, output=None):
         contents = stage / "QuipIt.app" / "Contents"
         (contents / "MacOS").mkdir(parents=True)
         shutil.copytree(ROOT / "licenses", contents / "Resources" / "licenses")
+        shutil.copy2(ROOT / "assets" / "quipit.icns", contents / "Resources" / "quipit.icns")
         shutil.copy2(binary, contents / "MacOS" / "quipit")
         (contents / "MacOS" / "quipit").chmod(0o755)
         with (contents / "Info.plist").open("wb") as stream:
@@ -61,6 +62,7 @@ def package(target, binary=None, output=None):
                 "CFBundleIdentifier": "com.trilogic.quipit", "CFBundleExecutable": "quipit",
                 "CFBundlePackageType": "APPL", "CFBundleShortVersionString": version(),
                 "CFBundleVersion": version(), "NSHighResolutionCapable": True,
+                "CFBundleIconFile": "quipit.icns",
             }, stream)
         # Local signing makes the bundle internally consistent, but is not Developer ID signing.
         subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(stage / "QuipIt.app")], check=True)
@@ -69,11 +71,13 @@ def package(target, binary=None, output=None):
             for path in sorted(stage.rglob("*")):
                 archive.write(path, path.relative_to(output))
     elif target == "windows-x64":
+        shutil.copy2(ROOT / "assets" / "quipit.ico", stage / "quipit.ico")
         shutil.copy2(binary, stage / executable)
         with zipfile.ZipFile(output / f"{name}.zip", "w", zipfile.ZIP_DEFLATED) as archive:
             for path in sorted(stage.rglob("*")):
                 archive.write(path, path.relative_to(output))
     else:
+        shutil.copy2(ROOT / "assets" / "quipit-256.png", stage / "quipit.png")
         shutil.copy2(binary, stage / executable)
         (stage / executable).chmod(0o755)
         dependencies = subprocess.run(["ldd", str(stage / executable)], check=True, capture_output=True, text=True).stdout

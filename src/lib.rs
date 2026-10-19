@@ -1,6 +1,7 @@
 use eframe::egui::{self, Color32, TextureHandle, Vec2};
 use image::RgbaImage;
 
+mod about;
 mod ai;
 mod colors;
 pub mod commands;
@@ -9,6 +10,7 @@ mod geometry;
 mod insert;
 mod objects;
 mod project;
+mod save;
 pub mod shapes;
 pub mod text;
 mod toolbar;
@@ -42,6 +44,11 @@ pub struct QuipIt {
     texture: Option<TextureHandle>,
     path: Option<PathBuf>,
     project_path: Option<PathBuf>,
+    window_title: String,
+    program_icon: Option<TextureHandle>,
+    show_about: bool,
+    save_error: Option<String>,
+    save_as_dialog: Option<save::SaveAsDialog>,
     undo: Vec<EditorState>,
     redo: Vec<EditorState>,
     width: u32,
@@ -63,6 +70,8 @@ pub struct QuipIt {
     dirty: bool,
     status: String,
     pending_open: bool,
+    pending_open_path: Option<PathBuf>,
+    dropped_image: Option<PathBuf>,
     pending_new: bool,
     show_new: bool,
     new_width: u32,
@@ -92,6 +101,30 @@ pub struct QuipIt {
 }
 
 impl QuipIt {
+    fn document_title(&self) -> String {
+        let name = self
+            .project_path
+            .as_ref()
+            .or(self.path.as_ref())
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy())
+            .unwrap_or_else(|| "untitled.qip".into());
+        // Keep both the recognizable beginning and the extension of long names.
+        let characters: Vec<char> = name.chars().collect();
+        let name = if characters.len() > 48 {
+            format!(
+                "{}…{}",
+                characters[..31].iter().collect::<String>(),
+                characters[characters.len() - 16..]
+                    .iter()
+                    .collect::<String>()
+            )
+        } else {
+            name.into_owned()
+        };
+        format!("QuipIt - {name}")
+    }
+
     fn footer(&mut self, ctx: &egui::Context) {
         let mut ai_prompt = None;
         if !self.show_ai_commands {
@@ -330,6 +363,99 @@ impl QuipIt {
         self.run_command(ctx, commands::Command::OpenDocument { path });
     }
 
+    fn request_open_path(&mut self, path: PathBuf, ctx: &egui::Context) {
+        if self.dirty || self.inserted.is_some() {
+            self.pending_open_path = Some(path);
+            self.pending_open = true;
+        } else {
+            self.run_command(ctx, commands::Command::OpenDocument { path });
+        }
+    }
+
+    fn receive_dropped_file(&mut self, path: PathBuf, ctx: &egui::Context) {
+        let project = path.extension().is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("qip") || extension.eq_ignore_ascii_case("quipit")
+        });
+        if project || self.pixels.is_none() {
+            self.request_open_path(path, ctx);
+        } else {
+            self.dropped_image = Some(path);
+        }
+    }
+
+    fn handle_canvas_drop(&mut self, ctx: &egui::Context, rect: egui::Rect) {
+        if self.show_about
+            || self.pending_open
+            || self.pending_new
+            || self.confirm_close
+            || self.dropped_image.is_some()
+            || self.save_as_dialog.is_some()
+            || self.show_new
+            || self.show_resize
+            || self.show_shapes
+            || self.show_text_picker
+            || self.palette.edit.is_some()
+        {
+            return;
+        }
+        let files = ctx.input(|input| {
+            if input
+                .pointer
+                .latest_pos()
+                .is_some_and(|point| !rect.contains(point))
+            {
+                Vec::new()
+            } else {
+                input.raw.dropped_files.clone()
+            }
+        });
+        if files.len() > 1 {
+            self.status = "Drop one file at a time to open or import it".into();
+        } else if let Some(file) = files.into_iter().next() {
+            if let Some(path) = file.path {
+                self.receive_dropped_file(path, ctx);
+            } else {
+                self.status = "This dropped file has no local path".into();
+            }
+        }
+    }
+
+    fn dropped_image_dialog(&mut self, ctx: &egui::Context) {
+        let Some(path) = self.dropped_image.clone() else {
+            return;
+        };
+        let mut choice = None;
+        egui::Modal::new(egui::Id::new("dropped_image_choice")).show(ctx, |ui| {
+            ui.heading("Open or import image");
+            ui.label(path.file_name().unwrap_or_default().to_string_lossy());
+            ui.label("Open as a document or import into the current canvas?");
+            ui.horizontal(|ui| {
+                if ui.button("Open").clicked() {
+                    choice = Some(true);
+                }
+                if ui.button("Import").clicked() {
+                    choice = Some(false);
+                }
+                if ui.button("Cancel").clicked() {
+                    self.dropped_image = None;
+                }
+            });
+        });
+        if let Some(open) = choice {
+            self.resolve_dropped_image(open, ctx);
+        }
+    }
+
+    fn resolve_dropped_image(&mut self, open: bool, ctx: &egui::Context) {
+        if let Some(path) = self.dropped_image.take() {
+            if open {
+                self.request_open_path(path, ctx);
+            } else {
+                self.run_command(ctx, commands::Command::InsertImage { path });
+            }
+        }
+    }
+
     fn continue_document_action(&mut self, ctx: &egui::Context) {
         // Finish the object only after approval so Cancel preserves the edit.
         self.commit_insert(ctx);
@@ -339,7 +465,11 @@ impl QuipIt {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if self.pending_open {
-            self.open(ctx);
+            if let Some(path) = self.pending_open_path.take() {
+                self.run_command(ctx, commands::Command::OpenDocument { path });
+            } else {
+                self.open(ctx);
+            }
         }
         if self.pending_new {
             self.new_aspect_ratio = None;
@@ -350,6 +480,7 @@ impl QuipIt {
         self.pending_new = false;
         self.confirm_close = false;
         self.pending_open = false;
+        self.pending_open_path = None;
     }
 
     fn insert(&mut self, ctx: &egui::Context) {
@@ -367,39 +498,73 @@ impl QuipIt {
 
     fn save(&mut self, save_as: bool, ctx: &egui::Context) {
         self.update_shape();
-        let Some(_) = &self.pixels else {
+        if self.pixels.is_none() {
             return;
-        };
-        let path = if save_as || self.project_path.is_none() {
-            rfd::FileDialog::new()
-                .add_filter("QuipIt project", &["qip", "quipit"])
-                .set_file_name("untitled.qip")
-                .save_file()
-        } else {
-            self.project_path.clone()
-        };
-        if let Some(path) = path {
-            self.run_command(ctx, commands::Command::SaveProject { path });
+        }
+        let current = self.project_path.as_ref().or(self.path.as_ref());
+        let qoi = current.is_some_and(|path| {
+            path.extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("qoi"))
+        });
+        if save_as || current.is_none() || qoi {
+            self.begin_save_as();
+        } else if let Some(path) = current.cloned() {
+            self.save_document_path(path, ctx);
         }
     }
 
-    fn export_image(&mut self, save_as: bool, ctx: &egui::Context) {
-        self.update_shape();
-        let Some(_) = self.pixels.as_ref() else {
-            return;
-        };
-        let path = if save_as || self.path.is_none() {
-            rfd::FileDialog::new()
-                .add_filter("PNG image", &["png"])
-                .add_filter("JPEG image", &["jpg"])
-                .add_filter("WebP image", &["webp"])
-                .set_file_name("quipit.png")
-                .save_file()
+    fn save_as_target(mut path: PathBuf, extension: Option<&str>) -> PathBuf {
+        if let Some(extension) = extension {
+            if !path
+                .extension()
+                .is_some_and(|actual| actual.eq_ignore_ascii_case(extension))
+            {
+                path.set_extension(extension);
+            }
+        }
+        path
+    }
+
+    fn save_document_path(&mut self, path: PathBuf, ctx: &egui::Context) {
+        let target = path.display().to_string();
+        let project = path.extension().is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("qip") || extension.eq_ignore_ascii_case("quipit")
+        });
+        let command = if project {
+            commands::Command::SaveProject { path }
         } else {
-            self.path.clone()
+            commands::Command::ExportImage { path }
         };
-        if let Some(path) = path {
-            self.run_command(ctx, commands::Command::ExportImage { path });
+        match self.execute(ctx, command) {
+            Ok(_) => {
+                self.save_error = None;
+                if project {
+                    self.path = None;
+                } else {
+                    self.project_path = None;
+                }
+                self.dirty = false;
+            }
+            Err(error) => {
+                let message = format!("Could not save {target}\n\n{error}");
+                self.status = message.clone();
+                self.save_error = Some(message);
+                self.dirty = true;
+            }
+        }
+    }
+
+    fn save_error_dialog(&mut self, ctx: &egui::Context) {
+        if let Some(message) = self.save_error.clone() {
+            egui::Modal::new(egui::Id::new("save_error")).show(ctx, |ui| {
+                ui.set_max_width(520.0);
+                ui.heading("Save failed");
+                ui.label(message);
+                ui.label("Your changes are still open. You can retry Save or use Save As.");
+                if ui.button("OK").clicked() {
+                    self.save_error = None;
+                }
+            });
         }
     }
 
@@ -722,6 +887,9 @@ impl QuipIt {
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
+        if self.show_about || self.save_as_dialog.is_some() || self.save_error.is_some() {
+            return;
+        }
         if self.active_text.is_some()
             && self.palette.edit.is_none()
             && ctx.memory(|m| m.has_focus(egui::Id::new("canvas_text_editor")))
@@ -743,6 +911,8 @@ impl QuipIt {
             || self.show_new
             || self.show_resize
             || self.show_shapes
+            || self.dropped_image.is_some()
+            || self.save_as_dialog.is_some()
         {
             return;
         }
@@ -785,6 +955,9 @@ impl QuipIt {
             && !self.pending_new
             && !self.pending_open
             && !self.confirm_close
+            && self.dropped_image.is_none()
+            && self.save_as_dialog.is_none()
+            && !self.show_about
         {
             let clicked_outside = ctx
                 .input(|i| {
@@ -858,21 +1031,16 @@ impl QuipIt {
                         }
                         ui.separator();
                         if ui
-                            .add(egui::Button::new("Save project").shortcut_text("Ctrl+S"))
+                            .add(egui::Button::new("Save").shortcut_text("Ctrl+S"))
                             .clicked()
                         {
                             ui.close();
                             self.commit_insert(ctx);
                             self.save(false, ctx);
                         }
-                        if ui.button("Save project as…").clicked() {
+                        if ui.button("Save As…").clicked() {
                             ui.close();
-                            self.commit_insert(ctx);
-                            self.save(true, ctx);
-                        }
-                        if ui.button("Export image…").clicked() {
-                            ui.close();
-                            self.export_image(true, ctx);
+                            self.begin_save_as();
                         }
                     });
                     ui.separator();
@@ -934,113 +1102,131 @@ impl QuipIt {
                 ui.disable();
             }
             ui.add_space(3.0);
-            egui::ScrollArea::horizontal()
-                .id_salt("toolbar_scroll")
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        if tool_button(ui, Icon::New, "New image", true, false).clicked() {
-                            if self.dirty || self.inserted.is_some() {
-                                self.pending_new = true;
-                            } else {
-                                self.new_aspect_ratio = None;
-                                self.new_width = 1280;
-                                self.new_height = 720;
-                                self.show_new = true;
+            ui.horizontal(|ui| {
+                let tools_width =
+                    (ui.available_width() - toolbar::BUTTON_SIZE - ui.spacing().item_spacing.x)
+                        .max(0.0);
+                egui::ScrollArea::horizontal()
+                    .id_salt("toolbar_scroll")
+                    .max_width(tools_width)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            if tool_button(ui, Icon::New, "New image", true, false).clicked() {
+                                if self.dirty || self.inserted.is_some() {
+                                    self.pending_new = true;
+                                } else {
+                                    self.new_aspect_ratio = None;
+                                    self.new_width = 1280;
+                                    self.new_height = 720;
+                                    self.show_new = true;
+                                }
                             }
-                        }
-                        if tool_button(ui, Icon::Open, "Open image", true, false).clicked() {
-                            if self.dirty || self.inserted.is_some() {
-                                self.pending_open = true;
-                            } else {
-                                self.open(ctx);
+                            if tool_button(ui, Icon::Open, "Open image", true, false).clicked() {
+                                if self.dirty || self.inserted.is_some() {
+                                    self.pending_open = true;
+                                } else {
+                                    self.open(ctx);
+                                }
                             }
-                        }
-                        let loaded = self.pixels.is_some();
-                        if tool_button(ui, Icon::Insert, "Insert image", loaded, false).clicked() {
-                            self.insert(ctx);
-                        }
-                        if tool_button(ui, Icon::Save, "Save project", loaded, false).clicked() {
-                            self.commit_insert(ctx);
-                            self.save(false, ctx);
-                        }
-                        ui.separator();
-                        if tool_button(ui, Icon::Undo, "Undo", !self.undo.is_empty(), false)
+                            let loaded = self.pixels.is_some();
+                            if tool_button(ui, Icon::Insert, "Insert image", loaded, false)
+                                .clicked()
+                            {
+                                self.insert(ctx);
+                            }
+                            if tool_button(ui, Icon::Save, "Save", loaded, false).clicked() {
+                                self.commit_insert(ctx);
+                                self.save(false, ctx);
+                            }
+                            ui.separator();
+                            if tool_button(ui, Icon::Undo, "Undo", !self.undo.is_empty(), false)
+                                .clicked()
+                            {
+                                self.history(false, ctx);
+                            }
+                            if tool_button(ui, Icon::Redo, "Redo", !self.redo.is_empty(), false)
+                                .clicked()
+                            {
+                                self.history(true, ctx);
+                            }
+                            ui.separator();
+                            if tool_button(
+                                ui,
+                                Icon::Crop,
+                                "Crop: drag a rectangle on the image",
+                                loaded,
+                                self.crop_mode,
+                            )
                             .clicked()
-                        {
-                            self.history(false, ctx);
-                        }
-                        if tool_button(ui, Icon::Redo, "Redo", !self.redo.is_empty(), false)
+                            {
+                                self.commit_insert(ctx);
+                                self.begin_crop();
+                            }
+                            if tool_button(
+                                ui,
+                                Icon::Resize,
+                                "Resize image",
+                                loaded,
+                                self.show_resize,
+                            )
                             .clicked()
-                        {
-                            self.history(true, ctx);
-                        }
-                        ui.separator();
-                        if tool_button(
-                            ui,
-                            Icon::Crop,
-                            "Crop: drag a rectangle on the image",
-                            loaded,
-                            self.crop_mode,
-                        )
-                        .clicked()
-                        {
-                            self.commit_insert(ctx);
-                            self.begin_crop();
-                        }
-                        if tool_button(ui, Icon::Resize, "Resize image", loaded, self.show_resize)
+                            {
+                                self.commit_insert(ctx);
+                                let pixels = self.pixels.as_ref().unwrap();
+                                self.width = pixels.width();
+                                self.height = pixels.height();
+                                self.crop_mode = false;
+                                self.selection = None;
+                                self.show_resize = true;
+                            }
+                            ui.separator();
+                            if tool_button(
+                                ui,
+                                Icon::Shapes,
+                                "2D Shapes: lines, curves and shapes",
+                                loaded,
+                                self.show_shapes,
+                            )
                             .clicked()
-                        {
-                            self.commit_insert(ctx);
-                            let pixels = self.pixels.as_ref().unwrap();
-                            self.width = pixels.width();
-                            self.height = pixels.height();
-                            self.crop_mode = false;
-                            self.selection = None;
-                            self.show_resize = true;
-                        }
-                        ui.separator();
-                        if tool_button(
-                            ui,
-                            Icon::Shapes,
-                            "2D Shapes: lines, curves and shapes",
-                            loaded,
-                            self.show_shapes,
-                        )
-                        .clicked()
-                        {
-                            self.show_shapes = !self.show_shapes;
-                            self.crop_mode = false;
-                            self.selection = None;
-                            self.show_resize = false;
-                        }
-                        if tool_button(
-                            ui,
-                            Icon::Text,
-                            "Add text rectangle, speech balloon or thought bubble",
-                            loaded,
-                            self.show_text_picker,
-                        )
-                        .clicked()
-                        {
-                            self.show_text_picker = !self.show_text_picker;
-                        }
-                        if self.selection.is_some() && ui.button("Apply crop").clicked() {
-                            self.crop_to_selection(ctx);
-                        }
-                        ui.separator();
-                        if tool_button(
-                            ui,
-                            Icon::Ai,
-                            "Show or hide AI commands",
-                            true,
-                            self.show_ai_commands,
-                        )
-                        .clicked()
-                        {
-                            self.show_ai_commands = !self.show_ai_commands;
-                        }
+                            {
+                                self.show_shapes = !self.show_shapes;
+                                self.crop_mode = false;
+                                self.selection = None;
+                                self.show_resize = false;
+                            }
+                            if tool_button(
+                                ui,
+                                Icon::Text,
+                                "Add text rectangle, speech balloon or thought bubble",
+                                loaded,
+                                self.show_text_picker,
+                            )
+                            .clicked()
+                            {
+                                self.show_text_picker = !self.show_text_picker;
+                            }
+                            if self.selection.is_some() && ui.button("Apply crop").clicked() {
+                                self.crop_to_selection(ctx);
+                            }
+                            ui.separator();
+                            if tool_button(
+                                ui,
+                                Icon::Ai,
+                                "Show or hide AI commands",
+                                true,
+                                self.show_ai_commands,
+                            )
+                            .clicked()
+                            {
+                                self.show_ai_commands = !self.show_ai_commands;
+                            }
+                        });
                     });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    self.about_button(ui);
                 });
+            });
             ui.add_space(3.0);
         });
         egui::TopBottomPanel::bottom("status_footer")
@@ -1049,7 +1235,11 @@ impl QuipIt {
             .exact_height(20.0)
             .show(ctx, |ui| {
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.add(egui::Label::new(&self.status).truncate().halign(egui::Align::Min));
+                    ui.add(
+                        egui::Label::new(&self.status)
+                            .truncate()
+                            .halign(egui::Align::Min),
+                    );
                 });
             });
         {
@@ -1537,12 +1727,19 @@ impl QuipIt {
         {
             self.crop_to_selection(ctx);
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            if self.show_new {
+        if !self.show_about
+            && self.save_as_dialog.is_none()
+            && self.save_error.is_none()
+            && ctx.input(|i| i.key_pressed(egui::Key::Escape))
+        {
+            if self.dropped_image.is_some() {
+                self.dropped_image = None;
+            } else if self.show_new {
                 self.show_new = false;
             } else if self.pending_new || self.pending_open || self.confirm_close {
                 self.pending_new = false;
                 self.pending_open = false;
+                self.pending_open_path = None;
                 self.confirm_close = false;
             } else {
                 self.crop_mode = false;
@@ -1690,10 +1887,17 @@ impl QuipIt {
         let mut edit_object_index = None;
         let mut select_background = false;
         self.footer(ctx);
-        egui::CentralPanel::default()
+        let canvas_panel = egui::CentralPanel::default()
             .frame(toolbar::panel_frame(ctx.style().visuals.panel_fill))
             .show(ctx, |ui| {
-                if self.show_new || self.pending_new || self.pending_open || self.confirm_close {
+                if self.show_new
+                    || self.pending_new
+                    || self.pending_open
+                    || self.confirm_close
+                    || self.dropped_image.is_some()
+                    || self.save_as_dialog.is_some()
+                    || self.show_about
+                {
                     ui.disable();
                 }
                 if let Some(texture) = &self.texture {
@@ -1924,6 +2128,7 @@ impl QuipIt {
                             && !self.pending_new
                             && !self.pending_open
                             && !self.confirm_close
+                            && !self.show_about
                             && !sampling
                             && let Some(data) = &mut self.active_text
                         {
@@ -1950,10 +2155,12 @@ impl QuipIt {
                     }
                 } else {
                     ui.centered_and_justified(|ui| {
-                        ui.label("QuipIt\nOpen an image to begin");
+                        ui.label("QuipIt\nOpen or drop a file to begin");
                     });
                 }
             });
+        self.handle_canvas_drop(ctx, canvas_panel.response.rect);
+        self.dropped_image_dialog(ctx);
         if accept_text {
             self.commit_insert(ctx);
         }
@@ -2032,11 +2239,13 @@ impl QuipIt {
                         if ui.button("Cancel").clicked() {
                             self.pending_new = false;
                             self.pending_open = false;
+                            self.pending_open_path = None;
                             self.confirm_close = false;
                         }
                     });
                 });
         }
+        self.about_dialog(ctx);
     }
 }
 
@@ -2074,12 +2283,303 @@ impl eframe::App for QuipIt {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_ai(ctx);
         self.ui(ctx);
+        self.show_save_as_dialog(ctx);
+        self.save_error_dialog(ctx);
+        let title = self.document_title();
+        if self.window_title != title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.window_title = title;
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn save_as_webp_honors_selected_format_with_missing_or_previous_extension() {
+        let ctx = egui::Context::default();
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.png");
+        RgbaImage::from_pixel(320, 240, image::Rgba([255, 255, 255, 255]))
+            .save(&source)
+            .unwrap();
+        let source_bytes = std::fs::read(&source).unwrap();
+        let mut app = QuipIt::default();
+        app.request_open_path(source.clone(), &ctx);
+        app.place_text(text::Kind::Area, &ctx);
+        app.active_text.as_mut().unwrap().content = "Save As WebP".into();
+        app.text_dirty = true;
+        app.commit_insert(&ctx);
+        let expected = app.composed_canvas().unwrap();
+        for name in [
+            "new-image",
+            "old-extension.png",
+            "correct.webp",
+            "uppercase.WEBP",
+        ] {
+            let target = QuipIt::save_as_target(directory.path().join(name), Some("webp"));
+            app.save_document_path(target.clone(), &ctx);
+            assert!(app.save_error.is_none(), "{}", app.status);
+            assert!(!app.dirty);
+            assert_eq!(
+                image::guess_format(&std::fs::read(&target).unwrap()).unwrap(),
+                image::ImageFormat::WebP
+            );
+            assert_eq!(image::open(&target).unwrap().to_rgba8(), expected);
+            assert_eq!(app.path.as_ref(), Some(&target));
+            assert!(app.project_path.is_none());
+            app.edit_object(0, &ctx);
+            app.active_text.as_mut().unwrap().content = "Updated WebP".into();
+            app.text_dirty = true;
+            app.commit_insert(&ctx);
+            let updated = app.composed_canvas().unwrap();
+            app.save(false, &ctx);
+            assert_eq!(image::open(&target).unwrap().to_rgba8(), updated);
+            app.edit_object(0, &ctx);
+            app.active_text.as_mut().unwrap().content = "Save As WebP".into();
+            app.text_dirty = true;
+            app.commit_insert(&ctx);
+        }
+        assert_eq!(std::fs::read(&source).unwrap(), source_bytes);
+    }
+
+    #[test]
+    fn toolbar_save_overwrites_the_original_webp_with_flattened_edits() {
+        let ctx = egui::Context::default();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("original.webp");
+        let original = RgbaImage::from_pixel(320, 240, image::Rgba([255, 255, 255, 255]));
+        original.save(&path).unwrap();
+        let mut app = QuipIt::default();
+        app.request_open_path(path.clone(), &ctx);
+        app.place_text(text::Kind::Area, &ctx);
+        app.active_text.as_mut().unwrap().content = "Flatten this into the original".into();
+        app.text_dirty = true;
+        app.update_shape();
+        let expected = app.composed_canvas().unwrap();
+        assert_ne!(expected, original);
+        let frame = |events| egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1150.0, 780.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run(frame(vec![]), |ctx| app.ui(ctx));
+        let output = ctx.run(frame(vec![]), |ctx| app.ui(ctx));
+        // The Save icon's outer square is 16 x 16 pixels.
+        let pos = output
+            .shapes
+            .iter()
+            .find_map(|shape| {
+                if let egui::Shape::Rect(rect) = &shape.shape {
+                    if rect.rect.size() == egui::vec2(16.0, 16.0) && rect.rect.center().y < 100.0 {
+                        return Some(rect.rect.center());
+                    }
+                }
+                None
+            })
+            .expect("Save toolbar icon");
+        for pressed in [true, false] {
+            let _ = ctx.run(
+                frame(vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]),
+                |ctx| app.ui(ctx),
+            );
+        }
+        assert_eq!(
+            image::open(&path).unwrap().to_rgba8(),
+            expected,
+            "{}",
+            app.status
+        );
+        assert!(!app.dirty, "{}", app.status);
+        assert_eq!(app.path.as_ref(), Some(&path));
+        assert!(!path.with_extension("qip").exists());
+    }
+
+    #[test]
+    fn save_prompt_overwrites_opened_images_with_pending_text_before_opening_drop() {
+        for extension in ["png", "jpg", "webp"] {
+            let ctx = egui::Context::default();
+            let directory = tempfile::tempdir().unwrap();
+            let original = directory.path().join(format!("original.{extension}"));
+            image::RgbImage::from_pixel(320, 240, image::Rgb([255, 255, 255]))
+                .save(&original)
+                .unwrap();
+            let original_bytes = std::fs::read(&original).unwrap();
+            let next = directory.path().join("next.png");
+            RgbaImage::new(12, 10).save(&next).unwrap();
+            let mut app = QuipIt::default();
+            app.request_open_path(original.clone(), &ctx);
+            app.place_text(text::Kind::Area, &ctx);
+            app.active_text.as_mut().unwrap().content = "Save this text".into();
+            app.text_dirty = true;
+            app.update_shape();
+            let expected = app.composed_canvas().unwrap();
+            assert_ne!(expected, app.pixels.clone().unwrap());
+            app.request_open_path(next.clone(), &ctx);
+            let frame = |events| egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1150.0, 780.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(frame(vec![]), |ctx| app.ui(ctx));
+            let output = ctx.run(frame(vec![]), |ctx| app.ui(ctx));
+            let pos = output
+                .shapes
+                .iter()
+                .find_map(|shape| {
+                    if let egui::Shape::Text(text) = &shape.shape {
+                        if text.galley.text() == "Save" {
+                            return Some(text.pos + text.galley.size() * 0.5);
+                        }
+                    }
+                    None
+                })
+                .expect("Save button in unsaved changes prompt");
+            for pressed in [true, false] {
+                let _ = ctx.run(
+                    frame(vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ]),
+                    |ctx| app.ui(ctx),
+                );
+            }
+            assert_eq!(
+                app.path.as_ref(),
+                Some(&next),
+                "{extension}: {}",
+                app.status
+            );
+            assert_ne!(
+                std::fs::read(&original).unwrap(),
+                original_bytes,
+                "{extension}"
+            );
+            let saved = image::open(&original).unwrap().to_rgba8();
+            if extension != "jpg" {
+                assert_eq!(saved, expected, "{extension}");
+            }
+            assert!(saved.pixels().any(|pixel| pixel[0] < 200));
+        }
+    }
+
+    #[test]
+    fn dropped_images_open_import_and_preserve_changes_before_replacement() {
+        let ctx = egui::Context::default();
+        let directory = tempfile::tempdir().unwrap();
+        let image = directory.path().join("dropped.png");
+        RgbaImage::from_pixel(12, 10, image::Rgba([30, 60, 90, 255]))
+            .save(&image)
+            .unwrap();
+        let mut app = QuipIt::default();
+        let _ = ctx.run(
+            egui::RawInput {
+                dropped_files: vec![egui::DroppedFile {
+                    path: Some(image.clone()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            |ctx| app.handle_canvas_drop(ctx, egui::Rect::EVERYTHING),
+        );
+        assert_eq!(app.path.as_ref(), Some(&image));
+        assert_eq!(app.pixels.as_ref().unwrap().dimensions(), (12, 10));
+        app.receive_dropped_file(image.clone(), &ctx);
+        assert_eq!(app.dropped_image.as_ref(), Some(&image));
+        app.resolve_dropped_image(false, &ctx);
+        assert!(app.inserted.is_some());
+        assert_eq!(app.path.as_ref(), Some(&image));
+        assert!(!app.pending_open);
+        let original = app.pixels.clone();
+        app.receive_dropped_file(image.clone(), &ctx);
+        app.resolve_dropped_image(true, &ctx);
+        assert!(app.pending_open);
+        assert!(app.inserted.is_some());
+        assert_eq!(app.pixels, original);
+        assert_eq!(app.pending_open_path.as_ref(), Some(&image));
+        // Save the existing document, then continue directly to the dropped path.
+        app.save(false, &ctx);
+        assert!(!app.dirty);
+        app.continue_document_action(&ctx);
+        assert!(app.pending_open_path.is_none() && !app.pending_open);
+        assert!(app.inserted.is_none());
+        assert_eq!(app.path.as_ref(), Some(&image));
+    }
+
+    #[test]
+    fn dropping_projects_uses_unsaved_prompt_and_escape_clears_the_target() {
+        let ctx = egui::Context::default();
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("dropped.QuIpIt");
+        project::save(&project, &RgbaImage::new(6, 5), &[]).unwrap();
+        let mut app = QuipIt {
+            pixels: Some(RgbaImage::new(20, 20)),
+            dirty: true,
+            ..Default::default()
+        };
+        app.refresh(&ctx);
+        app.place_text(text::Kind::Area, &ctx);
+        app.active_text.as_mut().unwrap().content = "Keep my edits".into();
+        app.text_dirty = true;
+        app.receive_dropped_file(project.clone(), &ctx);
+        assert!(app.pending_open && app.dropped_image.is_none());
+        text_ui_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(!app.pending_open && app.pending_open_path.is_none());
+        assert_eq!(app.active_text.as_ref().unwrap().content, "Keep my edits");
+        assert_eq!(app.pixels.as_ref().unwrap().dimensions(), (20, 20));
+        app.receive_dropped_file(project.clone(), &ctx);
+        // Discard follows the same continuation as the existing Open workflow.
+        app.continue_document_action(&ctx);
+        assert_eq!(app.project_path.as_ref(), Some(&project));
+        assert_eq!(app.pixels.as_ref().unwrap().dimensions(), (6, 5));
+        assert!(!app.dirty && app.objects.is_empty());
+    }
+
+    #[test]
+    fn document_title_uses_current_filename_and_abbreviates_long_unicode_names() {
+        let mut app = QuipIt::default();
+        assert_eq!(app.document_title(), "QuipIt - untitled.qip");
+        app.path = Some(PathBuf::from("/images/photo.jpg"));
+        assert_eq!(app.document_title(), "QuipIt - photo.jpg");
+        app.project_path = Some(PathBuf::from("/projects/caption.qip"));
+        assert_eq!(app.document_title(), "QuipIt - caption.qip");
+        app.project_path = Some(PathBuf::from(format!("{}.qip", "猫".repeat(60))));
+        let title = app.document_title();
+        assert!(title.contains('…'));
+        assert!(title.ends_with(".qip"));
+        assert_eq!(title.strip_prefix("QuipIt - ").unwrap().chars().count(), 48);
+    }
 
     #[test]
     fn edits_restore_pixels_and_invalidate_redo_after_branching() {
@@ -2968,7 +3468,7 @@ mod tests {
     }
 
     #[test]
-    fn png_export_contains_text_and_keeps_session_objects_editable() {
+    fn png_save_contains_text_and_keeps_session_objects_editable() {
         let ctx = egui::Context::default();
         let mut app = QuipIt {
             pixels: Some(RgbaImage::new(320, 240)),
@@ -2989,14 +3489,45 @@ mod tests {
                 .as_nanos()
         ));
         app.path = Some(path.clone());
-        app.export_image(false, &ctx);
+        app.save(false, &ctx);
         let saved = image::open(&path).unwrap().to_rgba8();
         std::fs::remove_file(path).unwrap();
         assert_eq!(saved, expected);
         assert_eq!(app.objects[0].data.as_ref().unwrap().content, "Saved text");
-        assert!(app.dirty);
+        assert!(!app.dirty);
         app.edit_object(0, &ctx);
         assert_eq!(app.active_text.as_ref().unwrap().content, "Saved text");
+    }
+
+    #[test]
+    fn save_as_switches_the_default_target_and_failed_saves_keep_it() {
+        let ctx = egui::Context::default();
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = QuipIt {
+            pixels: Some(RgbaImage::from_pixel(8, 8, image::Rgba([20, 40, 60, 255]))),
+            path: Some(directory.path().join("original.png")),
+            dirty: true,
+            ..Default::default()
+        };
+        app.save(false, &ctx);
+        assert!(!app.dirty);
+        let project = directory.path().join("original.qip");
+        app.save_document_path(project.clone(), &ctx);
+        assert_eq!(app.project_path.as_ref(), Some(&project));
+        assert!(app.path.is_none());
+        let jpeg = directory.path().join("original.jpg");
+        app.save_document_path(jpeg.clone(), &ctx);
+        assert!(app.project_path.is_none());
+        assert_eq!(app.path.as_ref(), Some(&jpeg));
+        assert_eq!(image::open(&jpeg).unwrap().width(), 8);
+        app.dirty = true;
+        app.save_document_path(directory.path().join("missing/file.png"), &ctx);
+        assert!(app.dirty);
+        assert!(app.save_error.as_ref().unwrap().contains("file.png"));
+        assert_eq!(app.path.as_ref(), Some(&jpeg));
+        app.save(false, &ctx);
+        assert!(!app.dirty);
+        assert!(app.save_error.is_none());
     }
 
     fn mixed_object_document(ctx: &egui::Context) -> QuipIt {

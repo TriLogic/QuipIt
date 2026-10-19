@@ -31,6 +31,7 @@ class ReleaseTests(unittest.TestCase):
                             self.assertTrue(executable.mode & 0o111)
                         self.assertEqual(archive.extractfile(executable).read(), b"test executable")
                         self.assertTrue(any(m.name.endswith("runtime-libraries.txt") for m in archive.getmembers()))
+                        self.assertTrue(any(m.name.endswith("/quipit.png") for m in archive.getmembers()))
                 else:
                     with zipfile.ZipFile(archives[0]) as archive:
                         names = archive.namelist()
@@ -38,12 +39,15 @@ class ReleaseTests(unittest.TestCase):
                         if target.startswith("macos"):
                             plist = plistlib.loads(archive.read(next(n for n in names if n.endswith("Info.plist"))))
                             self.assertEqual(plist["CFBundleExecutable"], "quipit")
+                            self.assertEqual(plist["CFBundleIconFile"], "quipit.icns")
+                            self.assertTrue(any(n.endswith("Contents/Resources/quipit.icns") for n in names))
                             self.assertEqual(plist["CFBundleShortVersionString"], release.version())
                             self.assertTrue(any("Contents/Resources/licenses/" in n for n in names))
                             info = archive.getinfo(next(n for n in names if n.endswith("MacOS/quipit")))
                             if os.name != "nt":
                                 self.assertTrue((info.external_attr >> 16) & 0o111)
                         else:
+                            self.assertTrue(any(n.endswith("/quipit.ico") for n in names))
                             self.assertEqual(archive.read(next(n for n in names if n.endswith("quipit.exe"))), b"test executable")
 
     def test_plan_rejects_tag_that_disagrees_with_cargo_version(self):

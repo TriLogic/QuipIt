@@ -3394,6 +3394,7 @@ name = "quipit"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
+ "cc",
  "directories",
  "eframe",
  "egui",
