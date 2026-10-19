@@ -111,7 +111,7 @@ impl TextData {
             redo: Vec::new(),
         }
     }
-    fn selection(&self) -> std::ops::Range<usize> {
+    pub(crate) fn selection(&self) -> std::ops::Range<usize> {
         let anchor = self.anchor.unwrap_or(self.cursor);
         anchor.min(self.cursor)..anchor.max(self.cursor)
     }
@@ -122,7 +122,7 @@ impl TextData {
         self.undo.push((self.content.clone(), self.cursor));
         self.redo.clear();
     }
-    fn insert(&mut self, value: &str) {
+    pub(crate) fn insert(&mut self, value: &str) {
         self.checkpoint();
         let range = self.selection();
         let start = range.start;
@@ -143,7 +143,7 @@ impl TextData {
                 .next()
                 .map_or(0, char::len_utf8)
     }
-    fn word_boundary(&self, backward: bool) -> usize {
+    pub(crate) fn word_boundary(&self, backward: bool) -> usize {
         let mut position = self.cursor;
         if backward {
             let mut chars = self.content[..position].char_indices().rev().peekable();
@@ -166,7 +166,7 @@ impl TextData {
         }
         position
     }
-    fn erase(&mut self, backward: bool) {
+    pub(crate) fn erase(&mut self, backward: bool) {
         let mut range = self.selection();
         if range.is_empty() {
             range = if backward {
@@ -182,6 +182,24 @@ impl TextData {
             self.anchor = None;
         }
     }
+    pub(crate) fn history(&mut self, redo: bool) {
+        let previous = if redo {
+            self.redo.pop()
+        } else {
+            self.undo.pop()
+        };
+        if let Some(previous) = previous {
+            let current = (self.content.clone(), self.cursor);
+            if redo {
+                self.undo.push(current);
+            } else {
+                self.redo.push(current);
+            }
+            (self.content, self.cursor) = previous;
+            self.anchor = None;
+        }
+    }
+
     pub fn keyboard(&mut self, ctx: &egui::Context, layout: &Layout) -> (bool, bool) {
         let before = self.content.clone();
         let mut accept = false;
@@ -252,21 +270,7 @@ impl TextData {
                         continue;
                     }
                     if command && key == egui::Key::Z {
-                        let previous = if modifiers.shift {
-                            self.redo.pop()
-                        } else {
-                            self.undo.pop()
-                        };
-                        if let Some(previous) = previous {
-                            let current = (self.content.clone(), self.cursor);
-                            if modifiers.shift {
-                                self.undo.push(current);
-                            } else {
-                                self.redo.push(current);
-                            }
-                            (self.content, self.cursor) = previous;
-                            self.anchor = None;
-                        }
+                        self.history(modifiers.shift);
                         continue;
                     }
                     if key == egui::Key::Backspace {
@@ -818,7 +822,7 @@ pub fn canvas_editor(
         let unobscured = ui
             .ctx()
             .layer_id_at(pointer)
-            .is_none_or(|layer| layer.order < egui::Order::Foreground);
+            .is_none_or(|layer| layer.order < egui::Order::Middle);
         ui.data_mut(|state| state.remove::<usize>(id.with("selection_start")));
         if object.text_edit_hit_test(
             pointer,

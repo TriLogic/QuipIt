@@ -1,5 +1,39 @@
 # Change notes
 
+## 0.3.0 — 2026-10-19
+
+- Support mouse-driven AI chat detaching, window movement, redocking, and closing,
+  preserving the draft, conversation, and running request. Remember detached
+  window placement during the session. Let the window manager handle native
+  dragging and avoid geometry feedback during movement and edge resizing.
+- Stack Send above Stop at the right of the AI composer. Support docking from
+  both the native title bar and the internal AI header by tracking window movement
+  and mouse release. Add a visible dock strip and a Dock button as direct
+  mouse-operated reattachment controls. Disable native close controls where supported.
+- Move the Thinking status into the internal AI title bar instead of below the
+  command entry. Use a muted, fully visible input border with scrolling for
+  longer drafts.
+
+## 0.2.0 — 2026-10-19
+
+- Add AI-assisted editing through OpenAI, Google Gemini, and xAI Grok, with
+  provider configuration, model selection, connection testing, and optional
+  credential storage in the operating system's key store.
+- Add a resizable AI chat panel and validated, atomic editing plans that can be
+  undone. Support document descriptions, object counts, and history management.
+- Expose the shared editing engine through serializable Rust commands with
+  persistent object IDs, validation, and transactional batches.
+- Save images back to their current path and format. Replace the Export menu
+  with a Save As dialog offering filename, folder, and a format dropdown.
+  Exclude QOI output and display save failures without discarding edits.
+- Add canvas file drops with Open/Import choices and the existing unsaved-change
+  preservation flow.
+- Show the current filename in the window title, abbreviating long names.
+- Add a blue speech-balloon application icon, platform icon packaging, and an
+  About dialog with a matching monochrome toolbar button.
+- Fix the heart picker icon's downward stroke spike.
+- Rewrite the README to describe the current capabilities and AI integrations.
+
 ## 2026-10-15
 
 - Add a manually triggered or version-tagged release workflow with four native

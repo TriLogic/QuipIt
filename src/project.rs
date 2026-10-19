@@ -19,6 +19,8 @@ struct Project {
 }
 #[derive(Serialize, Deserialize)]
 struct SavedObject {
+    #[serde(default)]
+    id: Option<crate::commands::ObjectId>,
     name: String,
     visible: bool,
     pixels: Vec<u8>,
@@ -55,6 +57,7 @@ pub fn save(path: &Path, background: &RgbaImage, objects: &[Object]) -> Result<(
         .iter()
         .map(|o| {
             Ok(SavedObject {
+                id: Some(o.object.id),
                 name: o.name.clone(),
                 visible: o.visible,
                 pixels: png(&o.object.pixels)?,
@@ -104,6 +107,15 @@ pub fn load(path: &Path, ctx: &egui::Context) -> Result<(RgbaImage, Vec<Object>)
     let background = decode(&project.background)?;
     let canvas = egui::vec2(background.width() as f32, background.height() as f32);
     let mut objects = Vec::new();
+    let mut ids = std::collections::HashSet::new();
+    for saved in &project.objects {
+        if let Some(id) = saved.id {
+            if !id.is_valid() || !ids.insert(id) {
+                return Err("Invalid or duplicate object ID".into());
+            }
+            id.reserve();
+        }
+    }
     for saved in project.objects {
         if !saved.rect.is_finite()
             || saved.rect.width() <= 0.0
@@ -114,6 +126,9 @@ pub fn load(path: &Path, ctx: &egui::Context) -> Result<(RgbaImage, Vec<Object>)
             return Err("Invalid object dimensions".into());
         }
         let mut object = InsertedImage::new(decode(&saved.pixels)?, canvas, ctx);
+        if let Some(id) = saved.id {
+            object.id = id;
+        }
         object.rect = saved.rect;
         object.image_style = saved.image_style;
         object.prepare();

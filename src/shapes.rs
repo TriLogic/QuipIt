@@ -148,6 +148,20 @@ fn choices(
 fn paint(painter: &egui::Painter, kind: ShapeKind, rect: Rect, color: Color32) {
     let stroke = Stroke::new(1.8_f32, color);
     for (points, closed) in outlines(kind, rect) {
+        if kind == ShapeKind::Heart {
+            // The heart's cusp makes egui's miter join extend far below the
+            // icon. Round joins match the canvas renderer without a spike.
+            for segment in points.windows(2) {
+                painter.line_segment([segment[0], segment[1]], stroke);
+            }
+            if closed {
+                painter.line_segment([*points.last().unwrap(), points[0]], stroke);
+            }
+            for point in points {
+                painter.circle_filled(point, stroke.width / 2.0, color);
+            }
+            continue;
+        }
         painter.add(if closed {
             egui::Shape::closed_line(points, stroke)
         } else {
@@ -675,7 +689,7 @@ pub fn curve_editor(
     }
 }
 
-fn move_curve_point(
+pub(crate) fn move_curve_point(
     kind: ShapeKind,
     style: &mut Style,
     object: &mut Rect,
@@ -798,6 +812,36 @@ mod tests {
             })
             .max()
             .unwrap()
+    }
+
+    #[test]
+    fn heart_icon_stroke_stays_inside_its_picker_button() {
+        let ctx = egui::Context::default();
+        let button = Rect::from_min_size(egui::pos2(20.0, 20.0), Vec2::splat(34.0));
+        let preview = Rect::from_center_size(button.center(), Vec2::splat(20.0));
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
+            paint(
+                &ctx.layer_painter(egui::LayerId::background()),
+                ShapeKind::Heart,
+                preview,
+                Color32::WHITE,
+            );
+        });
+        let primitives = ctx.tessellate(output.shapes, output.pixels_per_point);
+        let mut count = 0;
+        for primitive in primitives {
+            if let egui::epaint::Primitive::Mesh(mesh) = primitive.primitive {
+                for vertex in mesh.vertices {
+                    count += 1;
+                    assert!(
+                        button.contains(vertex.pos),
+                        "Heart icon extends outside button: {:?}",
+                        vertex.pos
+                    );
+                }
+            }
+        }
+        assert!(count > 0);
     }
 
     #[test]

@@ -2,6 +2,54 @@ use eframe::egui::{self, Pos2, Rect, Response, Stroke, Ui, Vec2};
 
 pub const BUTTON_SIZE: f32 = 34.0;
 
+pub fn panel_frame(fill: egui::Color32) -> egui::Frame {
+    egui::Frame::new()
+        .fill(fill)
+        .stroke(Stroke::new(1.0_f32, egui::Color32::from_gray(58)))
+        .corner_radius(10)
+        .inner_margin(8)
+        .outer_margin(4)
+}
+
+pub fn section_header(ui: &mut Ui, title: &str) -> Response {
+    section_header_with_reserved_space(ui, title, 0.0)
+}
+
+pub fn section_header_with_reserved_space(ui: &mut Ui, title: &str, reserved: f32) -> Response {
+    // The body starts 8px inside the panel. Share that top inset with the
+    // header instead of adding it above the title's own padding.
+    let (allocated, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 16.0), egui::Sense::hover());
+    let rect = egui::Rect::from_min_max(
+        allocated.min - egui::vec2(8.0, 8.0),
+        allocated.max + egui::vec2(8.0, 0.0),
+    );
+    ui.painter().rect_filled(
+        rect,
+        egui::CornerRadius {
+            nw: 9,
+            ne: 9,
+            sw: 0,
+            se: 0,
+        },
+        egui::Color32::from_gray(72),
+    );
+    let mut job = egui::text::LayoutJob::simple(
+        title.into(),
+        egui::FontId::proportional(13.0),
+        egui::Color32::from_gray(240),
+        (rect.width() - reserved - 16.0).max(0.0),
+    );
+    job.wrap.max_rows = 1;
+    let galley = ui.painter().layout_job(job);
+    ui.painter().galley(
+        rect.min + egui::vec2(8.0, (rect.height() - galley.size().y) * 0.5),
+        galley,
+        egui::Color32::from_gray(240),
+    );
+    Response { rect, ..response }.on_hover_text(title)
+}
+
 pub fn numeric<T: egui::emath::Numeric>(
     ui: &mut Ui,
     label: &str,
@@ -74,6 +122,8 @@ pub enum Icon {
     Resize,
     Shapes,
     Text,
+    Ai,
+    About,
     RotateLeft,
     RotateRight,
     FlipVertical,
@@ -103,6 +153,32 @@ pub fn button(ui: &mut Ui, icon: Icon, label: &str, enabled: bool, selected: boo
             );
         };
         match icon {
+            Icon::About => {
+                painter.add(egui::Shape::closed_line(
+                    vec![
+                        point(1.0, 2.0),
+                        point(17.0, 2.0),
+                        point(17.0, 14.0),
+                        point(8.0, 14.0),
+                        point(3.0, 18.0),
+                        point(4.0, 14.0),
+                        point(1.0, 14.0),
+                    ],
+                    stroke,
+                ));
+                for x in [5.0, 9.0, 13.0] {
+                    painter.circle_filled(point(x, 8.0), 1.0, stroke.color);
+                }
+            }
+            Icon::Ai => {
+                painter.text(
+                    response.rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "AI",
+                    egui::FontId::proportional(17.0),
+                    stroke.color,
+                );
+            }
             Icon::New => {
                 outline((3.0, 1.0), (15.0, 17.0));
                 line((6.0, 9.0), (12.0, 9.0));

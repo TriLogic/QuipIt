@@ -23,7 +23,7 @@ pub struct Edit {
     pub color: Color32,
     pub transparency: f32,
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Palette {
     pub picking: bool,
     recent: [Option<Color32>; 2],

@@ -34,6 +34,7 @@ impl Default for ImageStyle {
 
 #[derive(Clone)]
 pub struct InsertedImage {
+    pub id: crate::commands::ObjectId,
     pub pixels: RgbaImage,
     texture: TextureHandle,
     pub rect: Rect,
@@ -56,6 +57,7 @@ impl InsertedImage {
             egui::TextureOptions::LINEAR,
         );
         Self {
+            id: crate::commands::ObjectId::new(),
             pixels,
             texture,
             rect,
