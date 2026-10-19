@@ -577,11 +577,11 @@ impl QuipIt {
                     }
                 }
                 // An edit's cancel snapshot must not restore purged text history.
-                if let Some((_, object)) = &mut self.object_before {
-                    if let Some(text) = &mut object.data {
-                        text.undo.clear();
-                        text.redo.clear();
-                    }
+                if let Some((_, object)) = &mut self.object_before
+                    && let Some(text) = &mut object.data
+                {
+                    text.undo.clear();
+                    text.redo.clear();
                 }
                 return Ok(self.inspect());
             }

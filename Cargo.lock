@@ -3391,7 +3391,7 @@ dependencies = [
 
 [[package]]
 name = "quipit"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "ab_glyph",
  "cc",
@@ -3407,6 +3407,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tiny-skia",
+ "x11-dl",
 ]
 
 [[package]]

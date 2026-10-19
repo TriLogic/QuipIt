@@ -645,10 +645,10 @@ mod tests {
             .shapes
             .iter()
             .find_map(|shape| {
-                if let egui::Shape::Text(text) = &shape.shape {
-                    if text.galley.text() == label {
-                        return Some(text.pos + text.galley.size() * 0.5);
-                    }
+                if let egui::Shape::Text(text) = &shape.shape
+                    && text.galley.text() == label
+                {
+                    return Some(text.pos + text.galley.size() * 0.5);
                 }
                 None
             })

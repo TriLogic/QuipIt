@@ -61,11 +61,15 @@ impl Chat {
         });
     }
 
+    pub(crate) fn is_thinking(&self) -> bool {
+        self.pending.is_some()
+    }
+
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<String> {
         let mut send = false;
         // Allocate a fixed viewport: transcript content must never resize the panel.
         let (rect, _) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
-        let composer_height = if self.pending.is_some() { 68.0 } else { 42.0 };
+        let composer_height = 52.0;
         let composer_top = (rect.bottom() - composer_height).max(rect.top());
         let mut composer = ui.new_child(
             egui::UiBuilder::new()
@@ -81,20 +85,70 @@ impl Chat {
             ui.horizontal(|ui| {
                 ui.monospace("ai>");
                 let enter = ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
-                let response = ui.add_sized(
-                    egui::vec2((ui.available_width() - 115.0).max(40.0), 42.0),
-                    egui::TextEdit::multiline(&mut self.input)
-                        .id(egui::Id::new("ai_chat_input"))
-                        .hint_text("Ask AI to edit the canvas…")
-                        .return_key(egui::KeyboardShortcut::new(
-                            egui::Modifiers::SHIFT,
-                            egui::Key::Enter,
-                        )),
-                );
+                let input_id = egui::Id::new("ai_chat_input");
+                let focused = ui.memory(|memory| memory.has_focus(input_id));
+                let border = egui::Color32::from_gray(if focused { 105 } else { 65 });
+                let response = ui
+                    .allocate_ui_with_layout(
+                        egui::vec2((ui.available_width() - 72.0).max(40.0), 48.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            egui::Frame::new()
+                                .fill(ui.visuals().text_edit_bg_color())
+                                .stroke(egui::Stroke::new(1.0_f32, border))
+                                .corner_radius(3)
+                                .inner_margin(4)
+                                .show(ui, |ui| {
+                                    egui::ScrollArea::vertical()
+                                        .id_salt("ai_composer_scroll")
+                                        .max_height(38.0)
+                                        .min_scrolled_height(38.0)
+                                        .auto_shrink([false, false])
+                                        .show(ui, |ui| {
+                                            ui.add(
+                                                egui::TextEdit::multiline(&mut self.input)
+                                                    .id(input_id)
+                                                    .frame(false)
+                                                    .margin(0)
+                                                    .desired_rows(2)
+                                                    .desired_width(ui.available_width())
+                                                    .hint_text("Ask AI to edit the canvas…")
+                                                    .return_key(egui::KeyboardShortcut::new(
+                                                        egui::Modifiers::SHIFT,
+                                                        egui::Key::Enter,
+                                                    )),
+                                            )
+                                        })
+                                        .inner
+                                })
+                                .inner
+                        },
+                    )
+                    .inner;
                 let ready = self.pending.is_none() && !self.input.trim().is_empty();
-                let clicked = ui.add_enabled(ready, egui::Button::new("Send")).clicked();
+                let mut clicked = false;
+                let mut stopped = false;
+                ui.allocate_ui_with_layout(
+                    egui::vec2(64.0, 48.0),
+                    egui::Layout::top_down(egui::Align::Max),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.y = 4.0;
+                        clicked = ui
+                            .add_enabled_ui(ready, |ui| {
+                                ui.add_sized([64.0, 22.0], egui::Button::new("Send"))
+                            })
+                            .inner
+                            .clicked();
+                        stopped = ui
+                            .add_enabled_ui(self.pending.is_some(), |ui| {
+                                ui.add_sized([64.0, 22.0], egui::Button::new("Stop"))
+                            })
+                            .inner
+                            .clicked();
+                    },
+                );
                 send = (response.has_focus() && enter && ready) || clicked;
-                if self.pending.is_some() && ui.button("Stop").clicked() {
+                if stopped {
                     self.pending = None;
                     self.say(
                         "system",
@@ -105,9 +159,6 @@ impl Chat {
                     response.request_focus();
                 }
             });
-            if self.pending.is_some() {
-                ui.label("ai> Thinking…");
-            }
         }
         let history_rect = egui::Rect::from_min_max(
             rect.min,
@@ -179,6 +230,7 @@ impl Chat {
                 *slot = Some(result);
             }
             ctx.request_repaint();
+            ctx.request_repaint_of(egui::ViewportId::ROOT);
         });
     }
 
@@ -299,24 +351,23 @@ fn normalize_colors(value: &mut Value) {
         Value::Array(values) => values.iter_mut().for_each(normalize_colors),
         Value::Object(fields) => {
             for (name, value) in fields {
-                if matches!(name.as_str(), "background" | "color" | "fill" | "border") {
-                    if let Some(color) = value.as_object() {
-                        if color.len() == 4 {
-                            for keys in [["r", "g", "b", "a"], ["red", "green", "blue", "alpha"]] {
-                                let components: Option<Vec<_>> = keys
-                                    .iter()
-                                    .map(|key| {
-                                        color
-                                            .get(*key)
-                                            .and_then(Value::as_u64)
-                                            .filter(|n| *n <= 255)
-                                    })
-                                    .collect();
-                                if let Some(components) = components {
-                                    *value = json!(components);
-                                    break;
-                                }
-                            }
+                if matches!(name.as_str(), "background" | "color" | "fill" | "border")
+                    && let Some(color) = value.as_object()
+                    && color.len() == 4
+                {
+                    for keys in [["r", "g", "b", "a"], ["red", "green", "blue", "alpha"]] {
+                        let components: Option<Vec<_>> = keys
+                            .iter()
+                            .map(|key| {
+                                color
+                                    .get(*key)
+                                    .and_then(Value::as_u64)
+                                    .filter(|n| *n <= 255)
+                            })
+                            .collect();
+                        if let Some(components) = components {
+                            *value = json!(components);
+                            break;
                         }
                     }
                 }
@@ -357,10 +408,10 @@ fn response_text(provider: Provider, value: &Value) -> Result<String, String> {
         }
         if let Some(parts) = candidate["content"]["parts"].as_array() {
             for part in parts {
-                if part["thought"] != true {
-                    if let Some(s) = part["text"].as_str() {
-                        text.push_str(s);
-                    }
+                if part["thought"] != true
+                    && let Some(s) = part["text"].as_str()
+                {
+                    text.push_str(s);
                 }
             }
         }
@@ -370,14 +421,14 @@ fn response_text(provider: Provider, value: &Value) -> Result<String, String> {
         }
         if let Some(items) = value["output"].as_array() {
             for item in items {
-                if item["type"] == "message" {
-                    if let Some(parts) = item["content"].as_array() {
-                        for part in parts {
-                            if part["type"] == "output_text" {
-                                if let Some(s) = part["text"].as_str() {
-                                    text.push_str(s);
-                                }
-                            }
+                if item["type"] == "message"
+                    && let Some(parts) = item["content"].as_array()
+                {
+                    for part in parts {
+                        if part["type"] == "output_text"
+                            && let Some(s) = part["text"].as_str()
+                        {
+                            text.push_str(s);
                         }
                     }
                 }
@@ -875,8 +926,10 @@ mod tests {
     #[test]
     fn chat_footer_stays_beside_sidebar_above_full_width_status_and_resizes() {
         let ctx = egui::Context::default();
-        let mut app = QuipIt::default();
-        app.show_ai_commands = true;
+        let mut app = QuipIt {
+            show_ai_commands: true,
+            ..Default::default()
+        };
         for _ in 0..80 {
             app.ai_chat
                 .say("assistant", "A long conversation entry. ".repeat(20));
@@ -932,6 +985,223 @@ mod tests {
         );
     }
 
+    fn ai_windows_frame(
+        app: &mut QuipIt,
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1150.0, 780.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                app.ui(ctx);
+                app.detached_ai_window(ctx);
+            },
+        )
+    }
+
+    fn ai_header_position(app: &mut QuipIt, ctx: &egui::Context) -> egui::Pos2 {
+        ai_windows_frame(app, ctx, vec![]);
+        let title = app.ai_settings.chat_title();
+        let output = ai_windows_frame(app, ctx, vec![]);
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| {
+                if let egui::Shape::Text(text) = &shape.shape
+                    && text.galley.text() == title
+                {
+                    return Some(text.pos + text.galley.size() * 0.5);
+                }
+                None
+            })
+            .expect("AI header is visible")
+    }
+
+    fn ai_mouse_button(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    fn drag_ai_header(app: &mut QuipIt, ctx: &egui::Context, target: egui::Pos2) {
+        let start = ai_header_position(app, ctx);
+        ai_windows_frame(
+            app,
+            ctx,
+            vec![
+                egui::Event::PointerMoved(start),
+                ai_mouse_button(start, true),
+            ],
+        );
+        ai_windows_frame(app, ctx, vec![egui::Event::PointerMoved(target)]);
+        ai_windows_frame(app, ctx, vec![ai_mouse_button(target, false)]);
+        ai_windows_frame(app, ctx, vec![]);
+    }
+
+    #[test]
+    fn floating_chat_mouse_clicks_do_not_accept_the_canvas_edit_behind_it() {
+        let ctx = egui::Context::default();
+        let mut app = QuipIt {
+            pixels: Some(image::RgbaImage::new(800, 600)),
+            show_ai_commands: true,
+            ..Default::default()
+        };
+        app.refresh(&ctx);
+        app.place_text(crate::text::Kind::Area, &ctx);
+        app.active_text.as_mut().unwrap().content = "Keep editing".into();
+        app.text_dirty = true;
+        ai_windows_frame(&mut app, &ctx, vec![]);
+        let target = app.canvas_rect.unwrap().0.center();
+        drag_ai_header(&mut app, &ctx, target);
+        assert!(app.ai_window.detached);
+        let start = ai_header_position(&mut app, &ctx);
+        for pressed in [true, false] {
+            ai_windows_frame(
+                &mut app,
+                &ctx,
+                vec![
+                    egui::Event::PointerMoved(start),
+                    ai_mouse_button(start, pressed),
+                ],
+            );
+        }
+        assert_eq!(app.active_text.as_ref().unwrap().content, "Keep editing");
+        assert!(app.objects.is_empty());
+    }
+
+    #[test]
+    fn mouse_detach_dock_and_close_preserve_chat_draft_and_running_request() {
+        let ctx = egui::Context::default();
+        let mut app = QuipIt {
+            show_ai_commands: true,
+            ..Default::default()
+        };
+        app.ai_chat.input = "Keep this draft".into();
+        app.ai_chat.say("assistant", "Keep this conversation");
+        let pending = Arc::new(Mutex::new(None));
+        app.ai_chat.pending = Some(pending.clone());
+        ai_windows_frame(&mut app, &ctx, vec![]);
+        let footer = egui::containers::panel::PanelState::load(&ctx, egui::Id::new("ai_footer"))
+            .unwrap()
+            .rect;
+        drag_ai_header(
+            &mut app,
+            &ctx,
+            egui::pos2(footer.center().x, footer.top() - 90.0),
+        );
+        assert!(app.ai_window.detached && app.show_ai_commands);
+        assert_eq!(app.ai_chat.input, "Keep this draft");
+        assert_eq!(app.ai_chat.messages.len(), 1);
+        assert!(Arc::ptr_eq(app.ai_chat.pending.as_ref().unwrap(), &pending));
+        drag_ai_header(
+            &mut app,
+            &ctx,
+            egui::pos2(footer.center().x, footer.bottom() - 30.0),
+        );
+        assert!(!app.ai_window.detached && app.show_ai_commands);
+        drag_ai_header(
+            &mut app,
+            &ctx,
+            egui::pos2(footer.center().x, footer.top() - 90.0),
+        );
+        assert!(app.ai_window.detached);
+        ai_header_position(&mut app, &ctx);
+        let output = ai_windows_frame(&mut app, &ctx, vec![]);
+        let close = output
+            .shapes
+            .iter()
+            .find_map(|shape| {
+                if let egui::Shape::Text(text) = &shape.shape
+                    && text.galley.text() == "×"
+                {
+                    return Some(text.pos + text.galley.size() * 0.5);
+                }
+                None
+            })
+            .expect("AI close button");
+        for pressed in [true, false] {
+            ai_windows_frame(
+                &mut app,
+                &ctx,
+                vec![
+                    egui::Event::PointerMoved(close),
+                    ai_mouse_button(close, pressed),
+                ],
+            );
+        }
+        assert!(!app.show_ai_commands && app.ai_window.detached);
+        app.show_ai_commands = true;
+        ai_windows_frame(&mut app, &ctx, vec![]);
+        assert!(app.ai_window.detached);
+        assert_eq!(app.ai_chat.input, "Keep this draft");
+        assert_eq!(app.ai_chat.messages.len(), 1);
+        assert!(Arc::ptr_eq(app.ai_chat.pending.as_ref().unwrap(), &pending));
+    }
+
+    #[test]
+    fn composer_buttons_stay_stacked_at_the_right_edge_when_resized() {
+        for width in [400.0, 620.0, 900.0] {
+            for busy in [false, true] {
+                let ctx = egui::Context::default();
+                let mut chat = Chat::default();
+                if busy {
+                    chat.pending = Some(Arc::new(Mutex::new(None)));
+                }
+                let mut output = None;
+                for _ in 0..2 {
+                    output = Some(ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(width, 300.0),
+                            )),
+                            ..Default::default()
+                        },
+                        |ctx| {
+                            egui::CentralPanel::default().show(ctx, |ui| {
+                                chat.ui(ui);
+                            });
+                        },
+                    ));
+                }
+                let output = output.unwrap();
+                let label_center = |label| {
+                    output
+                        .shapes
+                        .iter()
+                        .find_map(|shape| {
+                            if let egui::Shape::Text(text) = &shape.shape
+                                && text.galley.text() == label
+                            {
+                                return Some(text.pos + text.galley.size() * 0.5);
+                            }
+                            None
+                        })
+                        .unwrap()
+                };
+                let send = label_center("Send");
+                let stop = label_center("Stop");
+                assert!((send.x - stop.x).abs() < 1.0);
+                assert!(send.y < stop.y);
+                assert!(
+                    (send.x - (width - 40.0)).abs() < 2.0,
+                    "width={width}, send={send:?}"
+                );
+                assert!(stop.y < 292.0);
+            }
+        }
+    }
+
     #[test]
     fn composer_enter_sends_and_shift_enter_inserts_newline() {
         let ctx = egui::Context::default();
@@ -985,14 +1255,16 @@ mod tests {
     #[test]
     fn completed_reply_reaches_the_editor_and_reports_success_in_chat() {
         let (mut app, ctx) = editor();
-        let mut chat = Chat::default();
-        chat.fingerprint = fingerprint(&mut app);
-        chat.pending = Some(Arc::new(Mutex::new(Some(Ok(Reply {
-            message: "Added a circle.".into(),
-            commands: vec![Command::AddShape {
-                kind: crate::shapes::ShapeKind::Circle,
-            }],
-        })))));
+        let mut chat = Chat {
+            fingerprint: fingerprint(&mut app),
+            pending: Some(Arc::new(Mutex::new(Some(Ok(Reply {
+                message: "Added a circle.".into(),
+                commands: vec![Command::AddShape {
+                    kind: crate::shapes::ShapeKind::Circle,
+                }],
+            }))))),
+            ..Default::default()
+        };
         chat.poll(&mut app, &ctx);
         assert!(chat.pending.is_none());
         assert_eq!(app.inspect().objects.len(), 1);
@@ -1086,14 +1358,16 @@ mod tests {
     #[test]
     fn stale_and_stopped_replies_cannot_edit_the_document() {
         let (mut app, ctx) = editor();
-        let mut chat = Chat::default();
-        chat.fingerprint = fingerprint(&mut app);
-        chat.pending = Some(Arc::new(Mutex::new(Some(Ok(Reply {
-            message: "edit".into(),
-            commands: vec![Command::AddShape {
-                kind: crate::shapes::ShapeKind::Circle,
-            }],
-        })))));
+        let mut chat = Chat {
+            fingerprint: fingerprint(&mut app),
+            pending: Some(Arc::new(Mutex::new(Some(Ok(Reply {
+                message: "edit".into(),
+                commands: vec![Command::AddShape {
+                    kind: crate::shapes::ShapeKind::Circle,
+                }],
+            }))))),
+            ..Default::default()
+        };
         app.execute(
             &ctx,
             Command::SetBackground {

@@ -3,11 +3,13 @@ use image::RgbaImage;
 
 mod about;
 mod ai;
+mod ai_window;
 mod colors;
 pub mod commands;
 mod crop;
 mod geometry;
 mod insert;
+mod native_mouse;
 mod objects;
 mod project;
 mod save;
@@ -95,6 +97,7 @@ pub struct QuipIt {
     text_overflow: bool,
     show_text_picker: bool,
     show_ai_commands: bool,
+    ai_window: ai_window::AiWindow,
     ai_settings: ai::Settings,
     ai_chat: ai::Chat,
     upload_pending: bool,
@@ -123,101 +126,6 @@ impl QuipIt {
             name.into_owned()
         };
         format!("QuipIt - {name}")
-    }
-
-    fn footer(&mut self, ctx: &egui::Context) {
-        let mut ai_prompt = None;
-        if !self.show_ai_commands {
-            return;
-        }
-        let panel = egui::TopBottomPanel::bottom("ai_footer")
-            .resizable(true)
-            .default_height(190.0)
-            .min_height(120.0)
-            .max_height((ctx.available_rect().height() * 0.6).max(120.0));
-        panel
-            .frame(egui::Frame::new().fill(ctx.style().visuals.panel_fill))
-            .show_separator_line(false)
-            .show(ctx, |ui| {
-                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    if self.show_ai_commands {
-                        let background = ui.visuals().panel_fill;
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(ui.available_width(), ui.available_height()),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                egui::Frame::new()
-                                    .fill(Color32::from_rgb(
-                                        background.r().saturating_sub(6),
-                                        background.g().saturating_sub(6),
-                                        background.b().saturating_sub(6),
-                                    ))
-                                    .stroke(egui::Stroke::new(1.0_f32, Color32::from_gray(58)))
-                                    .corner_radius(10)
-                                    .inner_margin(8)
-                                    .outer_margin(egui::Margin {
-                                        left: 4,
-                                        right: 4,
-                                        top: 4,
-                                        bottom: 0,
-                                    })
-                                    .show(ui, |ui| {
-                                        ui.set_min_size(ui.available_size());
-                                        ui.with_layout(
-                                            egui::Layout::top_down(egui::Align::Min),
-                                            |ui| {
-                                                ui.spacing_mut().item_spacing.y = 6.0;
-                                                let header =
-                                                    toolbar::section_header_with_reserved_space(
-                                                        ui,
-                                                        &self.ai_settings.chat_title(),
-                                                        172.0,
-                                                    );
-                                                let setup_rect = egui::Rect::from_center_size(
-                                                    header.rect.right_center()
-                                                        - egui::vec2(98.0, 0.0),
-                                                    egui::vec2(132.0, 20.0),
-                                                );
-                                                if ui
-                                                    .place(
-                                                        setup_rect,
-                                                        egui::Button::new(
-                                                            self.ai_settings.button_label(),
-                                                        ),
-                                                    )
-                                                    .on_hover_text("Set up or switch AI provider")
-                                                    .clicked()
-                                                {
-                                                    self.ai_settings.begin();
-                                                }
-                                                let close_rect = egui::Rect::from_center_size(
-                                                    header.rect.right_center()
-                                                        - egui::vec2(14.0, 0.0),
-                                                    Vec2::splat(20.0),
-                                                );
-                                                if ui
-                                                    .place(
-                                                        close_rect,
-                                                        egui::Button::new("×").frame(false),
-                                                    )
-                                                    .on_hover_text("Close AI commands")
-                                                    .clicked()
-                                                {
-                                                    self.show_ai_commands = false;
-                                                }
-                                                ai_prompt = self.ai_chat.ui(ui);
-                                            },
-                                        );
-                                    });
-                            },
-                        );
-                    }
-                });
-            });
-        if let Some(prompt) = ai_prompt {
-            self.send_ai(ctx, prompt);
-        }
     }
 
     fn new_image(&mut self, ctx: &egui::Context) {
@@ -514,13 +422,12 @@ impl QuipIt {
     }
 
     fn save_as_target(mut path: PathBuf, extension: Option<&str>) -> PathBuf {
-        if let Some(extension) = extension {
-            if !path
+        if let Some(extension) = extension
+            && !path
                 .extension()
                 .is_some_and(|actual| actual.eq_ignore_ascii_case(extension))
-            {
-                path.set_extension(extension);
-            }
+        {
+            path.set_extension(extension);
         }
         path
     }
@@ -938,7 +845,9 @@ impl QuipIt {
 
 impl QuipIt {
     fn ui(&mut self, ctx: &egui::Context) {
-        self.ai_settings.dialog(ctx);
+        if !self.ai_window.detached || !self.show_ai_commands {
+            self.ai_settings.dialog(ctx);
+        }
         if self.palette.edit.is_some()
             && (ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
                 || ctx.input(|i| i.viewport().close_requested()))
@@ -971,7 +880,7 @@ impl QuipIt {
                         let shape_commit_area = rect.contains(point);
                         let foreground = ctx
                             .layer_id_at(point)
-                            .is_some_and(|layer| layer.order >= egui::Order::Foreground);
+                            .is_some_and(|layer| layer.order >= egui::Order::Middle);
                         !inserted.contains_pointer(rect, scale, point)
                             && ((self.active_shape.is_none()
                                 && inserted.image_style.is_none()
@@ -1946,7 +1855,7 @@ impl QuipIt {
                         })
                         && ctx
                             .layer_id_at(pointer)
-                            .is_none_or(|layer| layer.order < egui::Order::Foreground)
+                            .is_none_or(|layer| layer.order < egui::Order::Middle)
                     {
                         edit_object_index = self.objects.iter().rposition(|text| {
                             text.visible
@@ -1970,7 +1879,7 @@ impl QuipIt {
                         if let Some(color) = point
                             .filter(|point| {
                                 ctx.layer_id_at(*point)
-                                    .is_none_or(|layer| layer.order < egui::Order::Foreground)
+                                    .is_none_or(|layer| layer.order < egui::Order::Middle)
                             })
                             .and_then(|point| {
                                 colors::sample(&self.composed_canvas().unwrap(), image_rect, point)
@@ -2285,6 +2194,7 @@ impl eframe::App for QuipIt {
         self.ui(ctx);
         self.show_save_as_dialog(ctx);
         self.save_error_dialog(ctx);
+        self.detached_ai_window(ctx);
         let title = self.document_title();
         if self.window_title != title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
@@ -2375,10 +2285,11 @@ mod tests {
             .shapes
             .iter()
             .find_map(|shape| {
-                if let egui::Shape::Rect(rect) = &shape.shape {
-                    if rect.rect.size() == egui::vec2(16.0, 16.0) && rect.rect.center().y < 100.0 {
-                        return Some(rect.rect.center());
-                    }
+                if let egui::Shape::Rect(rect) = &shape.shape
+                    && rect.rect.size() == egui::vec2(16.0, 16.0)
+                    && rect.rect.center().y < 100.0
+                {
+                    return Some(rect.rect.center());
                 }
                 None
             })
@@ -2443,10 +2354,10 @@ mod tests {
                 .shapes
                 .iter()
                 .find_map(|shape| {
-                    if let egui::Shape::Text(text) = &shape.shape {
-                        if text.galley.text() == "Save" {
-                            return Some(text.pos + text.galley.size() * 0.5);
-                        }
+                    if let egui::Shape::Text(text) = &shape.shape
+                        && text.galley.text() == "Save"
+                    {
+                        return Some(text.pos + text.galley.size() * 0.5);
                     }
                     None
                 })

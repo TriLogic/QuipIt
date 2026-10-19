@@ -113,7 +113,7 @@ def publish():
         "Built on Ubuntu 22.04; runtime library names are included in runtime-libraries.txt.\n\n"
         "These initial packages have no Windows publisher signature or Apple Developer ID/notarization. "
         "Operating systems may block or warn about them. Mac packages are locally ad-hoc signed only.\n\n"
-        "Use Save/Ctrl+S for editable .qip projects; use Export image for PNG/JPEG/WebP. "
+        "Save/Ctrl+S updates the current project or image; use Save As to choose another format. "
         "File associations and native installers are not included yet.\n\n"
         + (ROOT / "CHANGELOG.md").read_text()
     )

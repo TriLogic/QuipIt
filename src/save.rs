@@ -78,13 +78,12 @@ impl QuipIt {
             ui.label("Folder");
             ui.horizontal(|ui| {
                 ui.text_edit_singleline(&mut dialog.folder);
-                if ui.button("Browse…").clicked() {
-                    if let Some(folder) = rfd::FileDialog::new()
+                if ui.button("Browse…").clicked()
+                    && let Some(folder) = rfd::FileDialog::new()
                         .set_directory(&dialog.folder)
                         .pick_folder()
-                    {
-                        dialog.folder = folder.to_string_lossy().into_owned();
-                    }
+                {
+                    dialog.folder = folder.to_string_lossy().into_owned();
                 }
             });
             let previous_format = dialog.format;
@@ -170,10 +169,10 @@ mod tests {
             .shapes
             .iter()
             .find_map(|shape| {
-                if let egui::Shape::Text(text) = &shape.shape {
-                    if text.galley.text() == label {
-                        return Some(text.pos + text.galley.size() * 0.5);
-                    }
+                if let egui::Shape::Text(text) = &shape.shape
+                    && text.galley.text() == label
+                {
+                    return Some(text.pos + text.galley.size() * 0.5);
                 }
                 None
             })

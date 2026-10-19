@@ -822,7 +822,7 @@ pub fn canvas_editor(
         let unobscured = ui
             .ctx()
             .layer_id_at(pointer)
-            .is_none_or(|layer| layer.order < egui::Order::Foreground);
+            .is_none_or(|layer| layer.order < egui::Order::Middle);
         ui.data_mut(|state| state.remove::<usize>(id.with("selection_start")));
         if object.text_edit_hit_test(
             pointer,
