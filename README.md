@@ -201,7 +201,7 @@ content-generation quota.
 | Accept an object or crop | Enter, Apply, or the relevant toolbar action |
 | Cancel an edit or crop | Escape or Cancel |
 | Preserve proportions when resizing an object or crop | Hold Shift while dragging |
-| Toggle a selection handle between resize and rotate | Right-click the handle |
+| Rotate using a selection handle | Hold Ctrl and drag the handle (release Ctrl to resize) |
 | Move a text object | Drag its outer edge, or Alt-drag inside it |
 | Insert a forced line break on the canvas | Ctrl+Enter |
 | Select all text while typing | Ctrl+A |

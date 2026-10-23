@@ -227,6 +227,7 @@ impl QuipIt {
         }
         if let (Some((kind, style)), Some(inserted)) = (self.active_shape, &mut self.inserted) {
             inserted.image_style.get_or_insert_default();
+            inserted.set_selection_shape((kind, style));
             self.last_shape_border_width = Some(style.border_width);
             let size = [
                 inserted.rect.width().round().max(1.0) as u32,

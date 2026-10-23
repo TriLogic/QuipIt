@@ -1507,8 +1507,8 @@ impl QuipIt {
                                             );
                                         }
                                     });
-                                    if let Some(inserted) = &mut self.inserted {
-                                        let shadow = inserted.image_style.get_or_insert_default();
+                                    {
+                                        let shadow = edit.image.get_or_insert_default();
                                         ui.checkbox(&mut shadow.shadow, "Drop shadow");
                                         if shadow.shadow {
                                             if colors::selector(ui, "Shadow", shadow.shadow_color)
@@ -2995,6 +2995,75 @@ mod tests {
     }
 
     #[test]
+    fn shape_drop_shadow_checkbox_survives_properties_draft_and_apply() {
+        let ctx = egui::Context::default();
+        for kind in [
+            shapes::ShapeKind::Square,
+            shapes::ShapeKind::Circle,
+            shapes::ShapeKind::Line,
+            shapes::ShapeKind::Curve4,
+        ] {
+            let mut app = QuipIt {
+                pixels: Some(RgbaImage::new(600, 400)),
+                ..Default::default()
+            };
+            app.place_shape(kind, &ctx);
+            let frame = |events| egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200.0, 1000.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(frame(vec![]), |ctx| app.ui(ctx));
+            let output = ctx.run(frame(vec![]), |ctx| app.ui(ctx));
+            let pos = output
+                .shapes
+                .iter()
+                .find_map(|shape| {
+                    if let egui::Shape::Text(text) = &shape.shape
+                        && text.galley.text() == "Drop shadow"
+                    {
+                        Some(text.pos + text.galley.size() * 0.5)
+                    } else {
+                        None
+                    }
+                })
+                .expect("shape Drop shadow checkbox");
+            for pressed in [true, false] {
+                let _ = ctx.run(
+                    frame(vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ]),
+                    |ctx| app.ui(ctx),
+                );
+            }
+            assert!(
+                app.inserted.as_ref().unwrap().image_style.unwrap().shadow,
+                "{}",
+                kind.name()
+            );
+            let _ = ctx.run(frame(vec![]), |ctx| app.ui(ctx));
+            assert!(app.inserted.as_ref().unwrap().image_style.unwrap().shadow);
+            let with_shadow = app.composed_canvas().unwrap();
+            let mut without = app.inserted.as_ref().unwrap().clone();
+            without.image_style.as_mut().unwrap().shadow = false;
+            assert_ne!(with_shadow, without.composite(app.pixels.as_ref().unwrap()));
+            app.commit_insert(&ctx);
+            assert!(app.objects[0].object.image_style.unwrap().shadow);
+            app.edit_object(0, &ctx);
+            assert!(app.inserted.as_ref().unwrap().image_style.unwrap().shadow);
+        }
+    }
+
+    #[test]
     fn shape_shadows_follow_visible_pixels_and_survive_project_round_trip() {
         let ctx = egui::Context::default();
         let directory = tempfile::tempdir().unwrap();
@@ -3106,6 +3175,197 @@ mod tests {
         );
         app.finish_color(false);
         assert!(app.inserted.as_ref().unwrap().image_style.unwrap() == original);
+    }
+
+    #[test]
+    fn rotated_text_containers_flip_on_canvas_axes_and_flip_back() {
+        let ctx = egui::Context::default();
+        for kind in [text::Kind::Area, text::Kind::Speech, text::Kind::Thought] {
+            for degrees in [-90.0, -30.0, 30.0, 90.0] {
+                for horizontal in [false, true] {
+                    let mut app = QuipIt {
+                        pixels: Some(RgbaImage::new(600, 600)),
+                        ..Default::default()
+                    };
+                    app.place_text(kind, &ctx);
+                    app.active_text.as_mut().unwrap().content = "Readable".into();
+                    app.transform_selected(degrees, false, false);
+                    app.update_shape();
+                    let silhouette = |app: &QuipIt| {
+                        let object = app.inserted.as_ref().unwrap();
+                        let source = text::Container::from_text(app.active_text.as_ref().unwrap())
+                            .render(object.pixels.width(), object.pixels.height());
+                        insert::render_image(
+                            &source,
+                            object.image_style.unwrap(),
+                            object.rect.width().round() as u32,
+                            object.rect.height().round() as u32,
+                        )
+                    };
+                    let before = silhouette(&app);
+                    app.transform_selected(0.0, horizontal, !horizontal);
+                    app.update_shape();
+                    let after = silhouette(&app);
+                    let expected = if horizontal {
+                        image::imageops::flip_horizontal(&before)
+                    } else {
+                        image::imageops::flip_vertical(&before)
+                    };
+                    assert_eq!(after.dimensions(), expected.dimensions());
+                    // Rasterizing the reflected vector container can differ by
+                    // a coverage unit at antialiased edges.
+                    let error: u64 = after
+                        .as_raw()
+                        .iter()
+                        .zip(expected.as_raw())
+                        .map(|(a, b)| a.abs_diff(*b) as u64)
+                        .sum();
+                    assert!(
+                        error < after.as_raw().len() as u64 / 10,
+                        "{} at {degrees}, horizontal={horizontal}: error {error}",
+                        kind.name()
+                    );
+                    let object = app.inserted.as_ref().unwrap();
+                    let [a, _, c, _] = object.image_style.unwrap().transform;
+                    assert!(c.atan2(a).to_degrees().abs() <= 45.001);
+                    app.transform_selected(0.0, horizontal, !horizontal);
+                    app.update_shape();
+                    let restored = silhouette(&app);
+                    assert_eq!(restored.dimensions(), before.dimensions());
+                    let error: u64 = restored
+                        .as_raw()
+                        .iter()
+                        .zip(before.as_raw())
+                        .map(|(a, b)| a.abs_diff(*b) as u64)
+                        .sum();
+                    assert!(
+                        error < before.as_raw().len() as u64 / 10,
+                        "double flip error {error}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn text_tilts_with_its_container_and_stays_within_forty_five_degrees() {
+        let ctx = egui::Context::default();
+        for kind in [text::Kind::Area, text::Kind::Speech, text::Kind::Thought] {
+            for degrees in [-135.0_f32, -90.0, -45.0, -30.0, 30.0, 45.0, 90.0, 135.0] {
+                let mut app = QuipIt {
+                    pixels: Some(RgbaImage::new(600, 600)),
+                    ..Default::default()
+                };
+                app.place_text(kind, &ctx);
+                app.active_text.as_mut().unwrap().content = "Readable text".into();
+                app.transform_selected(degrees, false, false);
+                app.update_shape();
+                let object = app.inserted.as_ref().unwrap();
+                let [a, _, c, _] = object.image_style.unwrap().transform;
+                let tilt = c.atan2(a).to_degrees();
+                assert!(tilt.abs() <= 45.001);
+                let expected = degrees - (degrees / 90.0).round() * 90.0;
+                assert!((tilt - expected).abs() < 0.01);
+                let inner = app.active_text.as_ref().unwrap().container_transform;
+                // Layout sees a quarter-turned box, never the diagonal box's
+                // larger outer bounds, so text cannot spill into its corners.
+                assert!(
+                    (inner[0].abs() < 0.001 && inner[3].abs() < 0.001)
+                        || (inner[1].abs() < 0.001 && inner[2].abs() < 0.001)
+                );
+                let source = egui::pos2(25.0, 30.0);
+                let canvas = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(600.0));
+                let screen = object.source_to_screen(source, canvas, 1.0);
+                assert!(
+                    object
+                        .screen_to_source(screen, canvas, 1.0)
+                        .distance(source)
+                        < 0.001
+                );
+                app.transform_selected(-degrees, false, false);
+                app.update_shape();
+                let object = app.inserted.as_ref().unwrap();
+                let [a, b, c, d] = object.image_style.unwrap().transform;
+                assert!(a > 0.0 && d > 0.0 && b.abs() < 0.001 && c.abs() < 0.001);
+            }
+        }
+    }
+
+    #[test]
+    fn quarter_turns_keep_all_text_kinds_upright_and_rotate_the_container() {
+        let ctx = egui::Context::default();
+        for kind in [text::Kind::Area, text::Kind::Speech, text::Kind::Thought] {
+            for degrees in [-90.0, 90.0] {
+                let mut app = QuipIt {
+                    pixels: Some(RgbaImage::new(600, 600)),
+                    ..Default::default()
+                };
+                app.place_text(kind, &ctx);
+                let data = app.active_text.as_mut().unwrap();
+                data.content = "Readable".into();
+                data.color = Color32::RED;
+                data.size = 18.0;
+                data.bold = true;
+                let original_rect = app.inserted.as_ref().unwrap().rect;
+                let original_container = text::Container::from_text(data).render(
+                    original_rect.width().round() as u32,
+                    original_rect.height().round() as u32,
+                );
+                app.transform_selected(degrees, false, false);
+                app.update_shape();
+                let object = app.inserted.as_ref().unwrap();
+                assert!((object.rect.width() - original_rect.height()).abs() < 0.01);
+                assert!((object.rect.height() - original_rect.width()).abs() < 0.01);
+                let [a, b, c, d] = object.image_style.unwrap().transform;
+                assert!(a > 0.0 && d > 0.0);
+                assert_eq!((b, c), (0.0, 0.0));
+                let data = app.active_text.as_ref().unwrap();
+                let container = text::Container::from_text(data)
+                    .render(object.pixels.width(), object.pixels.height());
+                let expected = if degrees > 0.0 {
+                    image::imageops::rotate90(&original_container)
+                } else {
+                    image::imageops::rotate270(&original_container)
+                };
+                assert_eq!(container, expected);
+                let mut letters = data.clone();
+                letters.border = Color32::TRANSPARENT;
+                letters.fill = Color32::TRANSPARENT;
+                let (letters, layout) =
+                    text::render(&letters, object.pixels.width(), object.pixels.height());
+                let mut found = false;
+                for (x, y, pixel) in letters.enumerate_pixels() {
+                    if pixel[3] > 0 {
+                        found = true;
+                        let background = container.get_pixel(x, y);
+                        let alpha =
+                            pixel[3] as u32 * 255 + background[3] as u32 * (255 - pixel[3] as u32);
+                        let actual = object.pixels.get_pixel(x, y);
+                        for channel in 0..3 {
+                            let expected = (pixel[channel] as u32 * pixel[3] as u32 * 255
+                                + background[channel] as u32
+                                    * background[3] as u32
+                                    * (255 - pixel[3] as u32)
+                                + alpha / 2)
+                                / alpha;
+                            assert_eq!(actual[channel], expected as u8);
+                        }
+                    }
+                }
+                assert!(
+                    found,
+                    "{}: {:?}, max alpha {}",
+                    kind.name(),
+                    object.content_size(),
+                    letters.pixels().map(|p| p[3]).max().unwrap()
+                );
+                assert!(layout.carets[1].1.x > layout.carets[0].1.x);
+                assert_eq!(layout.carets[1].1.y, layout.carets[0].1.y);
+                let saved = serde_json::to_string(data).unwrap();
+                let restored: text::TextData = serde_json::from_str(&saved).unwrap();
+                assert_eq!(restored.container_transform, data.container_transform);
+            }
+        }
     }
 
     #[test]

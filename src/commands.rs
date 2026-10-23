@@ -989,8 +989,10 @@ impl QuipIt {
             } else if let Some(data) = &mut self.active_text {
                 data.flip_horizontal ^= horizontal;
                 data.flip_vertical ^= vertical;
-                self.text_dirty |= horizontal || vertical;
-                object.transform_image(degrees, false, false);
+                if degrees != 0.0 || horizontal || vertical {
+                    object.transform_text(data, degrees, horizontal, vertical);
+                }
+                self.text_dirty |= horizontal || vertical || degrees != 0.0;
             } else {
                 object.transform_image(degrees, horizontal, vertical);
             }

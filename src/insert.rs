@@ -13,7 +13,7 @@ pub struct ImageStyle {
     pub border: Color32,
     pub border_transparency: f32,
     pub image_transparency: f32,
-    transform: [f32; 4],
+    pub(crate) transform: [f32; 4],
 }
 impl Default for ImageStyle {
     fn default() -> Self {
@@ -38,7 +38,8 @@ pub struct InsertedImage {
     pub pixels: RgbaImage,
     texture: TextureHandle,
     pub rect: Rect,
-    rotate_mode: bool,
+    fitted_selection_bounds: Option<Rect>,
+    selection_shape: Option<(crate::shapes::ShapeKind, crate::shapes::Style)>,
     pub image_style: Option<ImageStyle>,
     prepared_key: Option<(ImageStyle, [u32; 2])>,
 }
@@ -61,7 +62,8 @@ impl InsertedImage {
             pixels,
             texture,
             rect,
-            rotate_mode: false,
+            fitted_selection_bounds: None,
+            selection_shape: None,
             image_style: None,
             prepared_key: None,
         }
@@ -97,6 +99,59 @@ impl InsertedImage {
         ) * magnitude;
         let factor = (16384.0 / size.x).min(16384.0 / size.y).min(1.0);
         self.rect = Rect::from_center_size(self.rect.center(), size * factor);
+    }
+
+    /// Keep text within 45 degrees of horizontal. The container's quarter-turn
+    /// lives in the text raster; the remaining tilt transforms text and box together.
+    pub(crate) fn transform_text(
+        &mut self,
+        data: &mut crate::text::TextData,
+        degrees: f32,
+        horizontal: bool,
+        vertical: bool,
+    ) {
+        let [a, b, c, d] = self.axes();
+        let [e, f, g, h] = data.container_transform;
+        let x = e.abs() + f.abs();
+        let y = g.abs() + h.abs();
+        self.image_style.get_or_insert_default().transform = [
+            a * e / x + b * g / y,
+            a * f / x + b * h / y,
+            c * e / x + d * g / y,
+            c * f / x + d * h / y,
+        ];
+        self.transform_image(degrees, horizontal, vertical);
+        // Flip controls also toggle the source-container flags. Compensate
+        // those source-axis reflections here so the net flip uses canvas axes.
+        let style = self.image_style.as_mut().unwrap();
+        if horizontal {
+            style.transform[0] = -style.transform[0];
+            style.transform[2] = -style.transform[2];
+        }
+        if vertical {
+            style.transform[1] = -style.transform[1];
+            style.transform[3] = -style.transform[3];
+        }
+        let [a, b, c, d] = self.axes();
+        let angle = c.atan2(a).to_degrees();
+        let tilt = angle - (angle / 90.0).round() * 90.0;
+        let (sin, cos) = tilt.to_radians().sin_cos();
+        let snap = |v: f32| if v.abs() < 0.0001 { 0.0 } else { v };
+        let inner = [
+            snap(cos * a + sin * c),
+            snap(cos * b + sin * d),
+            snap(-sin * a + cos * c),
+            snap(-sin * b + cos * d),
+        ];
+        data.container_transform = inner;
+        let width = inner[0].abs() + inner[1].abs();
+        let height = inner[2].abs() + inner[3].abs();
+        self.image_style.as_mut().unwrap().transform = [
+            snap(cos * width),
+            snap(-sin * height),
+            snap(sin * width),
+            snap(cos * height),
+        ];
     }
 
     fn axes(&self) -> [f32; 4] {
@@ -153,6 +208,16 @@ impl InsertedImage {
         self.texture.id()
     }
 
+    pub(crate) fn set_selection_shape(
+        &mut self,
+        shape: (crate::shapes::ShapeKind, crate::shapes::Style),
+    ) {
+        if self.selection_shape != Some(shape) {
+            self.selection_shape = Some(shape);
+            self.prepared_key = None;
+        }
+    }
+
     pub fn prepare(&mut self) {
         let Some(style) = self.image_style else {
             return;
@@ -164,6 +229,47 @@ impl InsertedImage {
         if self.prepared_key == Some((style, size)) {
             return;
         }
+        let silhouette = style
+            .shadow_container
+            .map(|container| {
+                container.selection_silhouette(self.pixels.width(), self.pixels.height())
+            })
+            .or_else(|| {
+                self.selection_shape.map(|(kind, mut shape_style)| {
+                    shape_style.fill = Color32::WHITE;
+                    shape_style.border = Color32::WHITE;
+                    shape_style.transparency = 0.0;
+                    crate::shapes::render(
+                        kind,
+                        shape_style,
+                        self.pixels.width(),
+                        self.pixels.height(),
+                    )
+                })
+            });
+        self.fitted_selection_bounds = silhouette.and_then(|silhouette| {
+            let mut silhouette_style = style;
+            silhouette_style.shadow = false;
+            silhouette_style.image_transparency = 0.0;
+            silhouette_style.border_width = 0.0;
+            let silhouette = render_image(&silhouette, silhouette_style, size[0], size[1]);
+            let mut min = egui::pos2(size[0] as f32, size[1] as f32);
+            let mut max = Pos2::ZERO;
+            for (x, y, pixel) in silhouette.enumerate_pixels() {
+                if pixel[3] > 0 {
+                    min.x = min.x.min(x as f32);
+                    min.y = min.y.min(y as f32);
+                    max.x = max.x.max((x + 1) as f32);
+                    max.y = max.y.max((y + 1) as f32);
+                }
+            }
+            (max.x > min.x && max.y > min.y).then(|| {
+                Rect::from_min_max(
+                    Pos2::ZERO + min.to_vec2() / egui::vec2(size[0] as f32, size[1] as f32),
+                    Pos2::ZERO + max.to_vec2() / egui::vec2(size[0] as f32, size[1] as f32),
+                )
+            })
+        });
         let pixels = render_with_shadow(&self.pixels, style, size[0], size[1]);
         self.texture.set(
             egui::ColorImage::from_rgba_unmultiplied(
@@ -185,6 +291,15 @@ impl InsertedImage {
             egui::TextureOptions::LINEAR,
         );
         self.pixels = pixels;
+    }
+
+    fn selection_rect(&self, rect: Rect) -> Rect {
+        self.fitted_selection_bounds.map_or(rect, |bounds| {
+            Rect::from_min_max(
+                rect.min + bounds.min.to_vec2() * rect.size(),
+                rect.min + bounds.max.to_vec2() * rect.size(),
+            )
+        })
     }
 
     pub fn screen_rect(&self, canvas: Rect, scale: f32) -> Rect {
@@ -238,7 +353,8 @@ impl InsertedImage {
         text_bounds: Option<Rect>,
     ) -> f32 {
         let mut rotation = 0.0;
-        let rect = self.screen_rect(canvas, scale);
+        let rotate = rotation_allowed && ui.input(|i| i.modifiers.ctrl);
+        let rect = self.selection_rect(self.screen_rect(canvas, scale));
         let move_response = ui.interact(
             rect.intersect(canvas),
             ui.id().with("insert_move"),
@@ -314,27 +430,48 @@ impl InsertedImage {
                 ui.id().with(("insert_handle", index)),
                 egui::Sense::click_and_drag(),
             );
-            if rotation_allowed && response.secondary_clicked() {
-                self.rotate_mode = !self.rotate_mode;
-            }
-            let origin = crate::geometry::drag_origin(&response, self.rect);
-            if response.dragged_by(egui::PointerButton::Primary)
-                && self.rotate_mode
-                && rotation_allowed
-            {
+            let total_delta = response.total_drag_delta().unwrap_or_default();
+            let drag_id = response.id.with("handle_drag_origin");
+            let (origin, delta_start) = ui.data_mut(|state| {
+                let previous = state.get_temp::<(bool, Rect, Vec2)>(drag_id);
+                let entry = if response.drag_started() {
+                    (rotate, self.rect, Vec2::ZERO)
+                } else if previous.is_some_and(|(mode, _, _)| mode != rotate) {
+                    // Rebase when Ctrl changes during a drag so resizing starts
+                    // from the current geometry rather than the pre-rotation box.
+                    (rotate, self.rect, total_delta)
+                } else {
+                    previous.unwrap_or((rotate, self.rect, Vec2::ZERO))
+                };
+                state.insert_temp(drag_id, entry);
+                (entry.1, entry.2)
+            });
+            if response.dragged_by(egui::PointerButton::Primary) && rotate {
                 if let Some(current) = response.interact_pointer_pos() {
                     let previous = current - ui.input(|i| i.pointer.delta());
                     rotation += rotation_delta(rect.center(), previous, current);
                 }
             } else if response.dragged_by(egui::PointerButton::Primary) {
-                let delta = response.total_drag_delta().unwrap_or_default() / scale;
-                self.rect = if ui.input(|i| i.modifiers.shift) {
-                    crate::geometry::resize_with_aspect(origin, x as u32, y as u32, delta, None)
+                let delta = (total_delta - delta_start) / scale;
+                let selection_origin = self.selection_rect(origin);
+                let resized = if ui.input(|i| i.modifiers.shift) {
+                    crate::geometry::resize_with_aspect(
+                        selection_origin,
+                        x as u32,
+                        y as u32,
+                        delta,
+                        None,
+                    )
                 } else {
-                    resize_rect(origin, x, y, delta)
+                    resize_rect(selection_origin, x, y, delta)
                 };
+                let factor = resized.size() / selection_origin.size();
+                self.rect = Rect::from_min_size(
+                    resized.min + (origin.min - selection_origin.min) * factor,
+                    origin.size() * factor,
+                );
             }
-            let cursor = if self.rotate_mode && rotation_allowed {
+            let cursor = if rotate {
                 egui::CursorIcon::None
             } else {
                 match (x, y) {
@@ -344,20 +481,20 @@ impl InsertedImage {
                     _ => egui::CursorIcon::ResizeNeSw,
                 }
             };
-            if self.rotate_mode
-                && rotation_allowed
-                && (response.hovered() || response.dragged_by(egui::PointerButton::Primary))
-            {
+            if rotate && (response.hovered() || response.dragged_by(egui::PointerButton::Primary)) {
                 paint_rotate_cursor(ui);
             }
             let response = response.on_hover_and_drag_cursor(cursor);
-            if rotation_allowed {
-                response.on_hover_text(if self.rotate_mode {
-                    "Drag to rotate. Right-click a handle to switch to resize."
-                } else {
-                    "Drag to resize. Right-click a handle to switch to rotate."
-                });
-            }
+            response.on_hover_text(if rotate {
+                "Ctrl+drag to rotate.
+Release Ctrl to resize. Shift+drag keeps proportions."
+            } else if rotation_allowed {
+                "Drag to resize.
+Shift+drag keeps proportions. Ctrl+drag rotates."
+            } else {
+                "Drag to resize.
+Shift+drag keeps proportions."
+            });
         }
         rotation
     }
@@ -464,7 +601,12 @@ fn render_with_shadow(source: &RgbaImage, style: ImageStyle, width: u32, height:
     output
 }
 
-fn render_image(source: &RgbaImage, style: ImageStyle, width: u32, height: u32) -> RgbaImage {
+pub(crate) fn render_image(
+    source: &RgbaImage,
+    style: ImageStyle,
+    width: u32,
+    height: u32,
+) -> RgbaImage {
     if style.transform == [1.0, 0.0, 0.0, 1.0] {
         return render_frame(source, style, width, height);
     }
@@ -650,6 +792,132 @@ mod tests {
     }
 
     #[test]
+    fn all_shapes_fit_selection_handles_to_their_transformed_outline() {
+        let ctx = egui::Context::default();
+        for kind in crate::shapes::ShapeKind::SHAPES
+            .into_iter()
+            .chain(crate::shapes::ShapeKind::LINES)
+        {
+            let mut style = crate::shapes::Style::default();
+            let mut object = InsertedImage::new(
+                crate::shapes::render(kind, style, 120, 80),
+                Vec2::splat(400.0),
+                &ctx,
+            );
+            object.image_style = Some(ImageStyle::default());
+            for (degrees, horizontal, vertical) in [
+                (30.0, false, false),
+                (0.0, true, false),
+                (0.0, false, true),
+                (60.0, false, false),
+            ] {
+                crate::shapes::transform_shape(
+                    kind,
+                    &mut style,
+                    &mut object.rect,
+                    degrees,
+                    horizontal,
+                    vertical,
+                );
+                let width = object.rect.width().round().max(1.0) as u32;
+                let height = object.rect.height().round().max(1.0) as u32;
+                object.update_pixels(crate::shapes::render(kind, style, width, height));
+                object.set_selection_shape((kind, style));
+                let original_rect = object.rect;
+                object.prepare();
+                assert_eq!(object.rect, original_rect);
+                let fitted = object.fitted_selection_bounds.unwrap();
+                let mut min = egui::pos2(width as f32, height as f32);
+                let mut max = Pos2::ZERO;
+                for (x, y, pixel) in object.pixels.enumerate_pixels() {
+                    if pixel[3] > 0 {
+                        min.x = min.x.min(x as f32);
+                        min.y = min.y.min(y as f32);
+                        max.x = max.x.max((x + 1) as f32);
+                        max.y = max.y.max((y + 1) as f32);
+                    }
+                }
+                let size = egui::vec2(width as f32, height as f32);
+                assert!(
+                    (fitted.min.to_vec2() * size - min.to_vec2()).length() < 0.001,
+                    "{}",
+                    kind.name()
+                );
+                assert!(
+                    (fitted.max.to_vec2() * size - max.to_vec2()).length() < 0.001,
+                    "{}",
+                    kind.name()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fitted_selection_bounds_follow_rotated_and_flipped_container_outline() {
+        let ctx = egui::Context::default();
+        for kind in [
+            crate::text::Kind::Area,
+            crate::text::Kind::Speech,
+            crate::text::Kind::Thought,
+        ] {
+            let mut data = crate::text::TextData::new(kind, 18.0);
+            data.fill = Color32::TRANSPARENT;
+            data.border = Color32::TRANSPARENT;
+            let mut object = InsertedImage::new(
+                crate::text::render(&data, 240, 160).0,
+                Vec2::splat(600.0),
+                &ctx,
+            );
+            object.image_style = Some(ImageStyle::default());
+            for (degrees, horizontal, vertical) in [
+                (30.0, false, false),
+                (0.0, true, false),
+                (0.0, false, true),
+                (60.0, false, false),
+            ] {
+                data.flip_horizontal ^= horizontal;
+                data.flip_vertical ^= vertical;
+                object.transform_text(&mut data, degrees, horizontal, vertical);
+                let size = object.content_size();
+                object.update_pixels(crate::text::render(&data, size[0], size[1]).0);
+                let container = crate::text::Container::from_text(&data);
+                object.image_style.as_mut().unwrap().shadow_container = Some(container);
+                let original_rect = object.rect;
+                object.prepare();
+                assert_eq!(object.rect, original_rect);
+                let bounds = object.fitted_selection_bounds.unwrap();
+                let width = object.rect.width().round() as u32;
+                let height = object.rect.height().round() as u32;
+                let silhouette = render_image(
+                    &container.selection_silhouette(size[0], size[1]),
+                    object.image_style.unwrap(),
+                    width,
+                    height,
+                );
+                let pixels = Rect::from_min_max(
+                    Pos2::ZERO + bounds.min.to_vec2() * egui::vec2(width as f32, height as f32),
+                    Pos2::ZERO + bounds.max.to_vec2() * egui::vec2(width as f32, height as f32),
+                );
+                let mut edges = [false; 4];
+                for (x, y, p) in silhouette.enumerate_pixels() {
+                    if p[3] > 0 {
+                        assert!(
+                            pixels
+                                .expand(0.001)
+                                .contains(egui::pos2(x as f32, y as f32))
+                        );
+                        edges[0] |= (x as f32 - pixels.left()).abs() < 0.01;
+                        edges[1] |= ((x + 1) as f32 - pixels.right()).abs() < 0.01;
+                        edges[2] |= (y as f32 - pixels.top()).abs() < 0.01;
+                        edges[3] |= ((y + 1) as f32 - pixels.bottom()).abs() < 0.01;
+                    }
+                }
+                assert!(edges.into_iter().all(|edge| edge));
+            }
+        }
+    }
+
+    #[test]
     fn old_project_image_styles_load_without_shadows() {
         let mut value = serde_json::to_value(ImageStyle::default()).unwrap();
         for name in ["shadow", "shadow_color", "shadow_offset", "shadow_blur"] {
@@ -773,51 +1041,119 @@ mod tests {
     }
 
     #[test]
-    fn right_clicking_a_handle_toggles_rotate_mode_without_resizing() {
-        let ctx = egui::Context::default();
-        let mut object = InsertedImage::new(RgbaImage::new(80, 80), Vec2::splat(200.0), &ctx);
-        let original = object.rect;
-        let canvas = Rect::from_min_size(egui::pos2(20.0, 20.0), Vec2::splat(200.0));
-        let point = object.screen_rect(canvas, 1.0).min;
-        let frame = |object: &mut InsertedImage, events| {
-            let _ = ctx.run(
-                egui::RawInput {
-                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::splat(400.0))),
-                    events,
-                    ..Default::default()
-                },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
-                        object.ui(ui, canvas, 1.0, true, None);
-                    });
-                },
-            );
-        };
-        frame(&mut object, vec![]);
-        for expected in [true, false] {
-            frame(
-                &mut object,
-                vec![
-                    egui::Event::PointerMoved(point),
-                    egui::Event::PointerButton {
-                        pos: point,
-                        button: egui::PointerButton::Secondary,
-                        pressed: true,
-                        modifiers: egui::Modifiers::NONE,
+    fn ctrl_on_handles_rotates_and_right_click_does_not_toggle_rotation() {
+        for ctrl in [false, true] {
+            let ctx = egui::Context::default();
+            let mut object = InsertedImage::new(RgbaImage::new(80, 80), Vec2::splat(200.0), &ctx);
+            let original = object.rect;
+            let canvas = Rect::from_min_size(egui::pos2(20.0, 20.0), Vec2::splat(200.0));
+            let point = object.screen_rect(canvas, 1.0).min;
+            let modifiers = if ctrl {
+                egui::Modifiers::CTRL
+            } else {
+                egui::Modifiers::NONE
+            };
+            let frame = |object: &mut InsertedImage, events, modifiers| {
+                let mut rotation = 0.0;
+                let output = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::splat(400.0))),
+                        events,
+                        modifiers,
+                        ..Default::default()
                     },
-                ],
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            rotation = object.ui(ui, canvas, 1.0, true, None);
+                        });
+                    },
+                );
+                (rotation, output.platform_output.cursor_icon)
+            };
+            frame(&mut object, vec![], modifiers);
+            // Right-clicking must neither transform the box nor affect the next drag.
+            for pressed in [true, false] {
+                let (rotation, _) = frame(
+                    &mut object,
+                    vec![
+                        egui::Event::PointerMoved(point),
+                        egui::Event::PointerButton {
+                            pos: point,
+                            button: egui::PointerButton::Secondary,
+                            pressed,
+                            modifiers,
+                        },
+                    ],
+                    modifiers,
+                );
+                assert_eq!(rotation, 0.0);
+                assert_eq!(object.rect, original);
+            }
+            let (_, cursor) = frame(
+                &mut object,
+                vec![egui::Event::PointerMoved(point)],
+                modifiers,
+            );
+            assert_eq!(
+                cursor,
+                if ctrl {
+                    egui::CursorIcon::None
+                } else {
+                    egui::CursorIcon::ResizeNwSe
+                }
             );
             frame(
                 &mut object,
                 vec![egui::Event::PointerButton {
                     pos: point,
-                    button: egui::PointerButton::Secondary,
-                    pressed: false,
-                    modifiers: egui::Modifiers::NONE,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers,
                 }],
+                modifiers,
             );
-            assert_eq!(object.rotate_mode, expected);
-            assert_eq!(object.rect, original);
+            let destination = point + egui::vec2(25.0, 0.0);
+            let (rotation, _) = frame(
+                &mut object,
+                vec![egui::Event::PointerMoved(destination)],
+                modifiers,
+            );
+            if ctrl {
+                assert!(rotation > 0.0);
+                assert_eq!(object.rect, original);
+                let (rotation, _) = frame(&mut object, vec![], egui::Modifiers::NONE);
+                assert_eq!(rotation, 0.0);
+                assert_eq!(object.rect, original);
+                let (rotation, _) = frame(
+                    &mut object,
+                    vec![egui::Event::PointerMoved(
+                        destination + egui::vec2(5.0, 0.0),
+                    )],
+                    egui::Modifiers::NONE,
+                );
+                assert_eq!(rotation, 0.0);
+                assert!((object.rect.width() - (original.width() - 5.0)).abs() < 0.001);
+            } else {
+                assert_eq!(rotation, 0.0);
+                assert!(object.rect.width() < original.width());
+            }
+            frame(
+                &mut object,
+                vec![egui::Event::PointerButton {
+                    pos: destination,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers,
+                }],
+                modifiers,
+            );
+            let handle = object.screen_rect(canvas, 1.0).min;
+            let (_, cursor) = frame(
+                &mut object,
+                vec![egui::Event::PointerMoved(handle)],
+                egui::Modifiers::NONE,
+            );
+            assert_eq!(cursor, egui::CursorIcon::ResizeNwSe);
         }
     }
 

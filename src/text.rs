@@ -41,6 +41,8 @@ pub struct TextData {
     pub alignment: u8,
     pub flip_horizontal: bool,
     pub flip_vertical: bool,
+    #[serde(default = "identity_transform")]
+    pub container_transform: [f32; 4],
     pub cursor: usize,
     pub anchor: Option<usize>,
     #[serde(skip)]
@@ -105,6 +107,7 @@ impl TextData {
             alignment: 0,
             flip_horizontal: false,
             flip_vertical: false,
+            container_transform: identity_transform(),
             cursor: 0,
             anchor: None,
             undo: Vec::new(),
@@ -356,6 +359,10 @@ impl TextData {
     }
 }
 
+fn identity_transform() -> [f32; 4] {
+    [1.0, 0.0, 0.0, 1.0]
+}
+
 pub fn sans() -> FontArc {
     FontArc::try_from_slice(epaint_default_fonts::UBUNTU_LIGHT).unwrap()
 }
@@ -377,6 +384,21 @@ pub fn text_bounds(data: &TextData, width: u32, height: u32) -> Rect {
             egui::pos2(rect.right(), size.y - rect.top()),
         );
     }
+    let [a, b, c, d] = data.container_transform;
+    let map = |p: Pos2| {
+        let u = p.x / size.x;
+        let v = p.y / size.y;
+        egui::pos2(
+            (a * u + b * v - a.min(0.0) - b.min(0.0)) / (a.abs() + b.abs()) * size.x,
+            (c * u + d * v - c.min(0.0) - d.min(0.0)) / (c.abs() + d.abs()) * size.y,
+        )
+    };
+    rect = Rect::from_points(&[
+        map(rect.left_top()),
+        map(rect.right_top()),
+        map(rect.left_bottom()),
+        map(rect.right_bottom()),
+    ]);
     let padding = (data.border_width / 2.0 + 6.0).min(rect.width().min(rect.height()) / 4.0);
     rect.shrink(padding)
 }
@@ -552,6 +574,8 @@ pub fn layout(data: &TextData, width: u32, height: u32) -> Layout {
 
 #[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Container {
+    #[serde(default = "identity_transform")]
+    transform: [f32; 4],
     kind: Kind,
     border: Color32,
     border_width: f32,
@@ -562,6 +586,7 @@ pub struct Container {
 impl Container {
     pub fn from_text(data: &TextData) -> Self {
         Self {
+            transform: data.container_transform,
             kind: data.kind,
             border: data.border,
             border_width: data.border_width,
@@ -570,7 +595,18 @@ impl Container {
             flip_vertical: data.flip_vertical,
         }
     }
+    pub(crate) fn selection_silhouette(mut self, width: u32, height: u32) -> RgbaImage {
+        self.fill = Color32::WHITE;
+        self.border = Color32::WHITE;
+        self.render(width, height)
+    }
+
     pub fn render(self, width: u32, height: u32) -> RgbaImage {
+        let [a, b, c, d] = self.transform;
+        let scale = egui::vec2(width as f32, height as f32)
+            / egui::vec2(a.abs() + b.abs(), c.abs() + d.abs());
+        let source_width = ((a * scale.x).hypot(c * scale.y).round() as u32).max(1);
+        let source_height = ((b * scale.x).hypot(d * scale.y).round() as u32).max(1);
         let shape = match self.kind {
             Kind::Area => crate::shapes::ShapeKind::Square,
             Kind::Speech => crate::shapes::ShapeKind::WordBalloon,
@@ -584,8 +620,8 @@ impl Container {
                 fill: self.fill,
                 ..Default::default()
             },
-            width,
-            height,
+            source_width,
+            source_height,
         );
         if self.flip_horizontal {
             image::imageops::flip_horizontal_in_place(&mut image);
@@ -593,7 +629,15 @@ impl Container {
         if self.flip_vertical {
             image::imageops::flip_vertical_in_place(&mut image);
         }
-        image
+        crate::insert::render_image(
+            &image,
+            crate::insert::ImageStyle {
+                transform: self.transform,
+                ..Default::default()
+            },
+            width,
+            height,
+        )
     }
 }
 
