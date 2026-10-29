@@ -203,7 +203,7 @@ content-generation quota.
 | Preserve proportions when resizing an object or crop | Hold Shift while dragging |
 | Rotate using a selection handle | Hold Ctrl and drag the handle (release Ctrl to resize) |
 | Move a text object | Drag its outer edge, or Alt-drag inside it |
-| Insert a forced line break on the canvas | Ctrl+Enter |
+| Insert a forced line break on the canvas | Shift+Enter or Ctrl+Enter |
 | Select all text while typing | Ctrl+A |
 
 ## Get QuipIt

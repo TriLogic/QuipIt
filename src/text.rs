@@ -260,7 +260,7 @@ impl TextData {
                 } => {
                     let command = modifiers.command || modifiers.ctrl;
                     if key == egui::Key::Enter {
-                        if command {
+                        if command || modifiers.shift {
                             self.insert("\n");
                         } else {
                             accept = true;
@@ -393,12 +393,36 @@ pub fn text_bounds(data: &TextData, width: u32, height: u32) -> Rect {
             (c * u + d * v - c.min(0.0) - d.min(0.0)) / (c.abs() + d.abs()) * size.y,
         )
     };
-    rect = Rect::from_points(&[
+    let skewed = (a.abs() > 0.0001 && b.abs() > 0.0001) || (c.abs() > 0.0001 && d.abs() > 0.0001);
+    if skewed && data.kind == Kind::Thought {
+        // The middle third of the pill stays inside its curved ends at every height.
+        rect = rect.shrink2(egui::vec2(rect.width() / 3.0, 0.0));
+    }
+    let corners = [
         map(rect.left_top()),
         map(rect.right_top()),
-        map(rect.left_bottom()),
         map(rect.right_bottom()),
-    ]);
+        map(rect.left_bottom()),
+    ];
+    rect = Rect::from_points(&corners);
+    if skewed {
+        // Fit an axis-aligned text box inside the transformed body. Its outer
+        // bounds include triangular regions outside a skewed container.
+        let center = rect.center();
+        let half = rect.size() / 2.0;
+        let mut fit = 1.0_f32;
+        for index in 0..4 {
+            let start = corners[index];
+            let edge = corners[(index + 1) % 4] - start;
+            let normal = egui::vec2(-edge.y, edge.x);
+            let distance = normal.dot(center - start).abs();
+            let extent = normal.x.abs() * half.x + normal.y.abs() * half.y;
+            if extent > 0.0 {
+                fit = fit.min(distance / extent);
+            }
+        }
+        rect = Rect::from_center_size(center, rect.size() * fit);
+    }
     let padding = (data.border_width / 2.0 + 6.0).min(rect.width().min(rect.height()) / 4.0);
     rect.shrink(padding)
 }
@@ -1015,6 +1039,29 @@ mod tests {
         result
     }
     #[test]
+    fn skewed_text_bounds_stay_inside_container() {
+        for kind in [Kind::Area, Kind::Speech, Kind::Thought] {
+            for transform in [[1.0, 0.7, 0.2, 1.0], [0.3, -1.0, 1.0, 0.4]] {
+                for flip_vertical in [false, true] {
+                    let mut data = TextData::new(kind, 18.0);
+                    data.container_transform = transform;
+                    data.flip_vertical = flip_vertical;
+                    let bounds = text_bounds(&data, 300, 200);
+                    let silhouette = Container::from_text(&data).selection_silhouette(300, 200);
+                    for y in bounds.top().ceil() as u32..bounds.bottom().floor() as u32 {
+                        for x in bounds.left().ceil() as u32..bounds.right().floor() as u32 {
+                            assert!(
+                                silhouette.get_pixel(x, y)[3] > 0,
+                                "text bounds escape container at {x},{y}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn zero_text_shadow_blur_matches_original_glyph_coverage() {
         let mut data = TextData::new(Kind::Area, 24.0);
         data.content = "Sharp".into();
@@ -1133,6 +1180,25 @@ mod tests {
             (false, true)
         );
     }
+    #[test]
+    fn shift_enter_inserts_line_break_in_every_text_kind() {
+        for kind in [Kind::Area, Kind::Speech, Kind::Thought] {
+            let mut data = TextData::new(kind, 20.0);
+            input(&mut data, vec![egui::Event::Text("First".into())]);
+            let mut enter = key(egui::Key::Enter, false);
+            if let egui::Event::Key { modifiers, .. } = &mut enter {
+                *modifiers = egui::Modifiers::SHIFT;
+            }
+            assert_eq!(input(&mut data, vec![enter]), (true, false));
+            input(&mut data, vec![egui::Event::Text("Second".into())]);
+            assert_eq!(data.content, "First\nSecond");
+            assert_eq!(
+                input(&mut data, vec![key(egui::Key::Enter, false)]),
+                (false, true)
+            );
+        }
+    }
+
     #[test]
     fn unicode_deletion_selection_paste_and_local_undo_are_safe() {
         let mut data = TextData::new(Kind::Area, 20.0);

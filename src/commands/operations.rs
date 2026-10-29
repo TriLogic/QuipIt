@@ -129,7 +129,7 @@ impl QuipIt {
         self.selection = None;
         self.crop_mode = false;
         ctx.memory_mut(|m| m.request_focus(egui::Id::new("canvas_text_editor")));
-        self.status="Type on the canvas. Ctrl+Enter inserts a line break. Click away to accept; Escape cancels.".into();
+        self.status="Type on the canvas. Shift+Enter or Ctrl+Enter inserts a line break. Click away to accept; Escape cancels.".into();
     }
 
     pub(crate) fn do_edit_object(&mut self, index: usize, ctx: &egui::Context) {

@@ -1318,7 +1318,7 @@ impl QuipIt {
                                             apply = ui.button("Apply").clicked();
                                         });
                                         ui.label(
-                                    "Ctrl+Enter: line break. Click away: accept. Escape: cancel.",
+                                    "Shift+Enter / Ctrl+Enter: line break. Click away: accept. Escape: cancel.",
                                 );
                                         return;
                                     }
